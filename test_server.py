@@ -923,7 +923,7 @@ class TestSamplingOCR:
     """Test sampling-based OCR functionality."""
 
     def test_get_ocr_backend_default(self):
-        """Test default OCR backend is auto."""
+        """Test default OCR backend is sampling."""
         import os
 
         from rm_mcp.ocr.sampling import get_ocr_backend
@@ -935,7 +935,7 @@ class TestSamplingOCR:
 
         try:
             result = get_ocr_backend()
-            assert result == "auto"
+            assert result == "sampling"
         finally:
             if env_backup is not None:
                 os.environ["REMARKABLE_OCR_BACKEND"] = env_backup
@@ -958,8 +958,8 @@ class TestSamplingOCR:
             elif "REMARKABLE_OCR_BACKEND" in os.environ:
                 del os.environ["REMARKABLE_OCR_BACKEND"]
 
-    def test_should_use_sampling_ocr_false_when_not_configured(self):
-        """Test should_use_sampling_ocr returns False when not configured."""
+    def test_should_use_sampling_ocr_true_when_default(self):
+        """Test should_use_sampling_ocr returns True with default config and capable client."""
         import os
 
         from mcp.types import ClientCapabilities, SamplingCapability
@@ -978,9 +978,9 @@ class TestSamplingOCR:
             mock_ctx.session.client_params = Mock()
             mock_ctx.session.client_params.capabilities = mock_caps
 
-            # Should return False because backend is "auto", not "sampling"
+            # Should return True because default backend is "sampling"
             result = should_use_sampling_ocr(mock_ctx)
-            assert result is False
+            assert result is True
         finally:
             if env_backup is not None:
                 os.environ["REMARKABLE_OCR_BACKEND"] = env_backup
@@ -1588,7 +1588,7 @@ class TestOCRAutoRetry:
             "highlights": [],
             "handwritten_text": ["Hello from OCR"],
             "pages": 1,
-            "ocr_backend": "tesseract",
+            "ocr_backend": "sampling",
         }
 
         with (

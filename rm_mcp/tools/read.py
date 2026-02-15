@@ -130,15 +130,7 @@ async def remarkable_read(
                                 notebook_pages[page - 1] = ocr_text
                                 ocr_backend_used = "sampling"
 
-            # For non-sampling: check full document cache or extract all
-            if not use_sampling and is_notebook and include_ocr:
-                cached = _helpers.get_cached_ocr_result(target_doc.ID, include_ocr=True, ocr_backend=None)
-                if cached and cached.get("handwritten_text"):
-                    notebook_pages = cached["handwritten_text"]
-                    ocr_backend_used = cached.get("ocr_backend")
-                    content = cached
-
-            # If not cached (non-sampling), perform extraction
+            # If not using sampling OCR, perform standard extraction
             if not notebook_pages and is_notebook:
                 raw_doc = client.download(target_doc)
                 with _helpers._temp_document(raw_doc) as tmp_path:

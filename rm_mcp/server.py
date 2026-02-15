@@ -57,12 +57,7 @@ class RemarkableMCP(FastMCP):
 
 def _build_instructions() -> str:
     """Build server instructions based on current configuration."""
-    import os
-
-    has_google_vision = bool(os.environ.get("GOOGLE_VISION_API_KEY"))
-    ocr_backend = os.environ.get("REMARKABLE_OCR_BACKEND", "auto").lower()
-
-    instructions = """# reMarkable MCP Server
+    return """# reMarkable MCP Server
 
 Access documents from your reMarkable tablet. All operations are read-only.
 
@@ -110,35 +105,13 @@ Documents are registered as resources for direct access:
 - `remarkable:///{path}.txt` - Get full extracted text content in one request
 - `remarkableimg:///{path}.page-{N}.png` - Get PNG image of page N (notebooks only)
 - Use resources when you need complete document content without pagination
-"""
 
-    # Add OCR instructions based on configuration
-    if ocr_backend == "sampling":
-        instructions += """
 ## OCR (Sampling Mode Active)
 
 OCR is configured to use this client's AI model via MCP sampling.
 Use `remarkable_image("Document", include_ocr=True)` to extract text from images.
 This requires no external API keys - it uses your client's capabilities.
 """
-    elif has_google_vision:
-        instructions += """
-## OCR (Google Vision Active)
-
-Google Vision API is configured for high-quality handwriting recognition.
-Use `include_ocr=True` with `remarkable_read()` to extract handwritten content.
-"""
-    else:
-        instructions += """
-## OCR (Tesseract Fallback)
-
-Google Vision is not configured. Tesseract will be used for OCR but works poorly
-on handwriting. For better results, either:
-- Configure GOOGLE_VISION_API_KEY for Google Vision
-- Set REMARKABLE_OCR_BACKEND=sampling to use this client's AI for OCR
-"""
-
-    return instructions
 
 
 @asynccontextmanager

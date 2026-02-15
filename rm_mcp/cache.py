@@ -183,7 +183,7 @@ def get_cached_page_ocr(
     Args:
         doc_id: Document ID
         page: Page number (1-indexed)
-        backend: OCR backend used ("sampling", "google", "tesseract")
+        backend: OCR backend used ("sampling")
 
     Returns:
         Cached OCR text or None if not cached/expired
@@ -210,7 +210,7 @@ def cache_page_ocr(
     Args:
         doc_id: Document ID
         page: Page number (1-indexed)
-        backend: OCR backend used ("sampling", "google", "tesseract")
+        backend: OCR backend used ("sampling")
         text: OCR text result
     """
     cache_key = (doc_id, page, backend)
@@ -236,7 +236,7 @@ def get_cached_ocr_result(
         doc_id: Document ID to look up
         include_ocr: Whether OCR content is required
         ocr_backend: If specified, only return cache if it was produced by this backend.
-                     Use "sampling", "google", or "tesseract". None accepts any backend.
+                     Use "sampling". None accepts any backend.
 
     Returns:
         Cached result dict or None if not cached/expired/wrong backend

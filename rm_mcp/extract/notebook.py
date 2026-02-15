@@ -229,13 +229,8 @@ def extract_text_from_document_zip(
                 # Malformed JSON - skip this file
                 pass
 
-        # OCR for handwritten content (optional)
-        if include_ocr and rm_files:
-            from rm_mcp.ocr import extract_handwriting_ocr
-
-            ocr_result, ocr_backend = extract_handwriting_ocr(rm_files)
-            result["handwritten_text"] = ocr_result
-            result["ocr_backend"] = ocr_backend
+        # OCR for handwritten content is handled at the tool level via sampling.
+        # This function no longer performs OCR directly.
 
     # Cache result if doc_id provided
     if doc_id:

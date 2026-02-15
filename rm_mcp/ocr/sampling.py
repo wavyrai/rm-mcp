@@ -18,7 +18,7 @@ API keys or services.
 
 - Sampling is asynchronous and requires a Context object from tool execution
 - The prompt is carefully crafted to return ONLY the extracted text
-- Falls back to tesseract/google if sampling is not available or fails
+- Returns None if sampling is not available or fails
 """
 
 import base64
@@ -155,8 +155,7 @@ async def ocr_via_sampling(
     except Exception:
         # Sampling may fail for various reasons: client doesn't support sampling,
         # session is not available, model doesn't support vision, network issues, etc.
-        # We intentionally swallow all exceptions and return None so the caller can
-        # fall back to other OCR methods (Google Vision, Tesseract).
+        # We intentionally swallow all exceptions and return None.
         return None
 
 
@@ -199,18 +198,14 @@ def get_ocr_backend() -> str:
     """
     Get the configured OCR backend from the environment.
 
-    Returns the raw value from REMARKABLE_OCR_BACKEND env var (default: "auto").
-    Possible values: "sampling", "google", "tesseract", "auto"
+    Returns the raw value from REMARKABLE_OCR_BACKEND env var (default: "sampling").
+    The only supported value is "sampling".
 
-    Note: This function only returns the configured string. The actual backend
-    selection logic (for "auto" mode) is implemented in the tool functions.
-
-    To use sampling OCR, explicitly set REMARKABLE_OCR_BACKEND=sampling.
     Sampling OCR requires a client that supports the sampling capability.
     """
     import os
 
-    return os.environ.get("REMARKABLE_OCR_BACKEND", "auto").lower()
+    return os.environ.get("REMARKABLE_OCR_BACKEND", "sampling").lower()
 
 
 def should_use_sampling_ocr(ctx: "Context") -> bool:

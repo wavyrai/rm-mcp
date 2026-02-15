@@ -1,7 +1,7 @@
 """
 Text extraction helpers for reMarkable documents.
 
-Provides PDF, EPUB, notebook (.rm) extraction, rendering, and OCR.
+Provides PDF, EPUB, notebook (.rm) extraction, and rendering.
 """
 
 # Re-export cache functions for backward compatibility
@@ -37,17 +37,9 @@ from rm_mcp.extract.render import (  # noqa: F401
     _add_svg_background,
     _get_svg_content_bounds,
     _parse_hex_color,
-    _render_rm_to_ocr_png,
     get_background_color,
     render_page_from_document_zip,
     render_page_from_document_zip_svg,
     render_rm_file_to_png,
     render_rm_file_to_svg,
-)
-from rm_mcp.ocr import (  # noqa: F401
-    _ocr_google_vision,
-    _ocr_google_vision_rest,
-    _ocr_google_vision_sdk,
-    _ocr_tesseract,
-    extract_handwriting_ocr,
 )

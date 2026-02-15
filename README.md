@@ -37,8 +37,8 @@ uvx rm-mcp --register YOUR_CODE
 
 #### 3. Install
 
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=remarkable&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22token%22%2C%22description%22%3A%22reMarkable%20API%20token%22%2C%22password%22%3Atrue%7D%2C%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22google_vision_api_key%22%2C%22description%22%3A%22Google%20Vision%20API%20Key%20(for%20handwriting%20OCR)%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22rm-mcp%22%5D%2C%22env%22%3A%7B%22REMARKABLE_TOKEN%22%3A%22%24%7Binput%3Atoken%7D%22%2C%22GOOGLE_VISION_API_KEY%22%3A%22%24%7Binput%3Agoogle_vision_api_key%7D%22%7D%7D)
-[![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=remarkable&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22token%22%2C%22description%22%3A%22reMarkable%20API%20token%22%2C%22password%22%3Atrue%7D%2C%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22google_vision_api_key%22%2C%22description%22%3A%22Google%20Vision%20API%20Key%20(for%20handwriting%20OCR)%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22rm-mcp%22%5D%2C%22env%22%3A%7B%22REMARKABLE_TOKEN%22%3A%22%24%7Binput%3Atoken%7D%22%2C%22GOOGLE_VISION_API_KEY%22%3A%22%24%7Binput%3Agoogle_vision_api_key%7D%22%7D%7D&quality=insiders)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=remarkable&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22token%22%2C%22description%22%3A%22reMarkable%20API%20token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22rm-mcp%22%5D%2C%22env%22%3A%7B%22REMARKABLE_TOKEN%22%3A%22%24%7Binput%3Atoken%7D%22%7D%7D)
+[![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=remarkable&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22token%22%2C%22description%22%3A%22reMarkable%20API%20token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22rm-mcp%22%5D%2C%22env%22%3A%7B%22REMARKABLE_TOKEN%22%3A%22%24%7Binput%3Atoken%7D%22%7D%7D&quality=insiders)
 
 Or configure manually in `.vscode/mcp.json`:
 
@@ -50,12 +50,6 @@ Or configure manually in `.vscode/mcp.json`:
       "id": "remarkable-token",
       "description": "reMarkable API Token",
       "password": true
-    },
-    {
-      "type": "promptString",
-      "id": "google-vision-key",
-      "description": "Google Vision API Key",
-      "password": true
     }
   ],
   "servers": {
@@ -63,8 +57,7 @@ Or configure manually in `.vscode/mcp.json`:
       "command": "uvx",
       "args": ["rm-mcp"],
       "env": {
-        "REMARKABLE_TOKEN": "${input:remarkable-token}",
-        "GOOGLE_VISION_API_KEY": "${input:google-vision-key}"
+        "REMARKABLE_TOKEN": "${input:remarkable-token}"
       }
     }
   }
@@ -169,84 +162,26 @@ Documents are automatically registered as MCP resources:
 
 ## OCR for Handwriting
 
-For handwritten content, rm-mcp offers several OCR backends. Choose based on your setup and requirements:
+rm-mcp uses **sampling OCR** — your MCP client's AI model extracts text from handwritten notes. No additional API keys or services needed.
 
-| Backend | Setup | Quality | Offline | Best For |
-|---------|-------|---------|---------|----------|
-| **Sampling** | No API key | Depends on client model | ✅ | Users with capable AI clients |
-| **Google Vision** | API key | Excellent | ❌ | Best handwriting accuracy |
-| **Tesseract** | System install | Poor for handwriting | ✅ | Printed text, offline fallback |
+### How It Works
 
-### Quick Setup
+When you use `include_ocr=True`, rm-mcp sends page images to your client's LLM (Claude, GPT-4, etc.) via MCP sampling. The model reads the handwriting and returns the text.
 
-Set `REMARKABLE_OCR_BACKEND` in your MCP config:
+### Usage
 
-```json
-{
-  "env": {
-    "REMARKABLE_OCR_BACKEND": "sampling"
-  }
-}
+```python
+# OCR on a page image
+remarkable_image("Handwritten Notes", include_ocr=True)
+
+# OCR when reading a notebook
+remarkable_read("Journal", include_ocr=True)
 ```
 
-**Options:** `sampling`, `google`, `tesseract`, `auto`
+### Requirements
 
-<details>
-<summary>📖 Sampling OCR (No API Key)</summary>
-
-Uses your MCP client's AI model for OCR. Works with clients that support MCP sampling (VS Code + Copilot, Claude Desktop, etc.).
-
-**Pros:**
-- No additional API keys needed
-- Quality depends on your client's model (GPT-4, Claude, etc.)
-- Private — handwriting stays local to your client
-
-**Cons:**
-- Only available with sampling-capable clients
-- Falls back to Google Vision (if API key configured) or Tesseract if sampling unavailable
-
-</details>
-
-<details>
-<summary>📖 Google Cloud Vision</summary>
-
-Provides consistently excellent handwriting recognition.
-
-**Setup:**
-1. Enable [Cloud Vision API](https://console.cloud.google.com/apis/library/vision.googleapis.com)
-2. Create an [API key](https://console.cloud.google.com/apis/credentials)
-3. Add to config: `"GOOGLE_VISION_API_KEY": "your-key"`
-
-**Cost:** 1,000 free requests/month, then ~$1.50 per 1,000.
-
-📖 **[Full Google Vision Setup Guide](docs/google-vision-setup.md)**
-
-</details>
-
-<details>
-<summary>📖 Tesseract (Fallback)</summary>
-
-Open-source OCR designed for printed text. Poor results with handwriting, but useful as an offline fallback.
-
-```bash
-# Install Tesseract
-# macOS
-brew install tesseract
-
-# Ubuntu/Debian
-sudo apt install tesseract-ocr
-
-# Windows
-choco install tesseract
-```
-
-</details>
-
-### Default Behavior (`auto`)
-
-When `REMARKABLE_OCR_BACKEND=auto` (default):
-1. Google Vision (if `GOOGLE_VISION_API_KEY` is set)
-2. Tesseract (fallback)
+- Your MCP client must support the **sampling** capability (VS Code + Copilot, Claude Desktop, etc.)
+- `REMARKABLE_OCR_BACKEND=sampling` (this is the default)
 
 ---
 
@@ -264,8 +199,7 @@ Limit the MCP server to a specific folder on your reMarkable. All operations wil
       "args": ["rm-mcp"],
       "env": {
         "REMARKABLE_TOKEN": "your-token",
-        "REMARKABLE_ROOT_PATH": "/Work",
-        "GOOGLE_VISION_API_KEY": "your-api-key"
+        "REMARKABLE_ROOT_PATH": "/Work"
       }
     }
   }
@@ -333,7 +267,6 @@ Treat your reMarkable as a second brain that AI can access. Combined with tools 
 
 | Guide | Description |
 |-------|-------------|
-| [Google Vision Setup](docs/google-vision-setup.md) | Set up handwriting OCR |
 | [Tools Reference](docs/tools.md) | Detailed tool documentation |
 | [Resources Reference](docs/resources.md) | MCP resources documentation |
 | [Capability Negotiation](docs/capabilities.md) | MCP protocol capabilities |

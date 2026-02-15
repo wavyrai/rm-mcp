@@ -34,12 +34,11 @@ _img_uri_to_doc: dict[str, tuple] = {}  # Map image URI template -> (client, doc
 def _make_doc_resource(client, document):
     """Create a resource function for a document.
 
-    Returns only user-supplied content: typed text, annotations, highlights,
-    and OCR for handwritten content. Does NOT include original PDF/EPUB text.
+    Returns only user-supplied content: typed text, annotations, highlights.
+    Does NOT include original PDF/EPUB text.
 
-    Note: Sampling OCR is not available for resources (requires async Context).
-    When REMARKABLE_OCR_BACKEND=sampling, resources fall back to google/tesseract.
-    Use the remarkable_read tool with include_ocr=True for sampling OCR.
+    Note: OCR is not available for resources (sampling OCR requires async Context).
+    Use the remarkable_read tool with include_ocr=True for OCR.
     """
     from rm_mcp.extract import extract_text_from_document_zip
 
@@ -64,15 +63,6 @@ def _make_doc_resource(client, document):
                     if text_parts:
                         text_parts.append("\n--- Highlights ---")
                     text_parts.extend(content["highlights"])
-
-                # If no text found and document has pages, try OCR for handwritten
-                # Note: sampling OCR not available here, falls back to google/tesseract
-                if not text_parts and content["pages"] > 0:
-                    content = extract_text_from_document_zip(
-                        tmp_path, include_ocr=True, doc_id=document.ID
-                    )
-                    if content["handwritten_text"]:
-                        text_parts.extend(content["handwritten_text"])
 
                 return "\n\n".join(text_parts) if text_parts else "(No user content)"
             finally:

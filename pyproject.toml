@@ -1,6 +1,6 @@
 [project]
 name = "rm-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for accessing reMarkable tablet data"
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,7 +22,6 @@ classifiers = [
 dependencies = [
     "mcp>=1.0.0",
     "rmscene>=0.6.0",
-    "pytesseract>=0.3.10",
     "Pillow>=10.0.0",
     "rmc>=0.3.0",
     "requests>=2.28.0",
@@ -39,10 +38,6 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
-ocr = [
-    "google-cloud-vision>=3.0.0",
-]
-
 [project.scripts]
 rm-mcp = "rm_mcp.cli:main"
 

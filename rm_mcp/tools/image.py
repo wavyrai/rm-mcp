@@ -1,7 +1,6 @@
 """remarkable_image tool — render document pages as images."""
 
 import base64
-import os
 from typing import Optional
 
 from mcp.server.fastmcp import Context
@@ -234,25 +233,6 @@ async def remarkable_image(
                         ocr_text = await _helpers.ocr_via_sampling(ctx, png_data)
                         if ocr_text:
                             ocr_backend_used = "sampling"
-
-                    # Fall back to traditional OCR if sampling failed or not available
-                    if ocr_text is None:
-                        # Need to temporarily save PNG to file for tesseract/google
-                        with _helpers._temp_document(png_data, suffix=".png") as ocr_tmp_path:
-                            backend = _helpers.get_ocr_backend()
-                            # When backend is "sampling" but sampling failed, fall through to
-                            # Google (if API key available) or Tesseract as per documented behavior
-                            if backend in ("sampling", "google") or (
-                                backend == "auto" and os.environ.get("GOOGLE_VISION_API_KEY")
-                            ):
-                                ocr_text = _helpers._ocr_png_google_vision(ocr_tmp_path)
-                                if ocr_text:
-                                    ocr_backend_used = "google"
-                            # Fall through to Tesseract if Google not available or returned None
-                            if ocr_text is None:
-                                ocr_text = _helpers._ocr_png_tesseract(ocr_tmp_path)
-                                if ocr_text:
-                                    ocr_backend_used = "tesseract"
 
                 resource_uri = f"remarkableimg:///{uri_path}.page-{page}.png"
                 png_base64 = base64.b64encode(png_data).decode("utf-8")
