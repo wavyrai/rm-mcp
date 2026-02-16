@@ -4,6 +4,7 @@ SVG/PNG rendering for reMarkable .rm files.
 Uses rmc for .rm -> SVG conversion, then cairosvg for SVG -> PNG.
 """
 
+import logging
 import os
 import shutil
 import sys
@@ -11,6 +12,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # reMarkable tablet screen dimensions (in pixels) - used as fallback
 REMARKABLE_WIDTH = 1404
@@ -29,6 +32,40 @@ def get_background_color() -> str:
 # For backwards compatibility, expose as module constant (evaluated at import)
 # Use get_background_color() for runtime evaluation of env var
 REMARKABLE_BACKGROUND_COLOR = get_background_color()
+
+
+def _ensure_cairo_library_path() -> None:
+    """Ensure the Cairo C library can be found by cairocffi.
+
+    When running under uvx with uv-managed Python, Homebrew's library path
+    (/opt/homebrew/lib on Apple Silicon, /usr/local/lib on Intel Mac) may not
+    be in the dynamic linker search path. This causes cairocffi to fail with
+    'no library called "cairo" was found' even when Cairo is installed.
+
+    This function adds common library paths to DYLD_FALLBACK_LIBRARY_PATH
+    so cairocffi can find libcairo.dylib.
+    """
+    if sys.platform != "darwin":
+        return
+
+    candidates = ["/opt/homebrew/lib", "/usr/local/lib"]
+    existing = [p for p in candidates if Path(p, "libcairo.2.dylib").exists()]
+    if not existing:
+        return
+
+    env_key = "DYLD_FALLBACK_LIBRARY_PATH"
+    current = os.environ.get(env_key, "")
+    current_paths = set(current.split(":")) if current else set()
+
+    new_paths = [p for p in existing if p not in current_paths]
+    if new_paths:
+        updated = ":".join(filter(None, [current] + new_paths))
+        os.environ[env_key] = updated
+        logger.debug("Added %s to %s", new_paths, env_key)
+
+
+# Auto-configure library path at import time
+_ensure_cairo_library_path()
 
 
 def _find_rmc() -> str:
@@ -216,11 +253,13 @@ def render_rm_file_to_png(
             )
 
     except subprocess.TimeoutExpired:
+        logger.warning("rmc timed out rendering %s", rm_file_path)
         return None
     except FileNotFoundError:
-        # rmc not installed
+        logger.warning("rmc binary not found — is the 'rmc' package installed?")
         return None
     except Exception:
+        logger.exception("Failed to render %s to PNG", rm_file_path)
         return None
     finally:
         if tmp_svg_path:
@@ -276,11 +315,13 @@ def render_rm_file_to_svg(
         return svg_content
 
     except subprocess.TimeoutExpired:
+        logger.warning("rmc timed out rendering %s to SVG", rm_file_path)
         return None
     except FileNotFoundError:
-        # rmc not installed
+        logger.warning("rmc binary not found — is the 'rmc' package installed?")
         return None
     except Exception:
+        logger.exception("Failed to render %s to SVG", rm_file_path)
         return None
     finally:
         if tmp_svg_path:
