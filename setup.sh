@@ -43,6 +43,17 @@ main() {
     fi
   fi
 
+  # Cairo (needed for PNG image rendering)
+  if $IS_MAC && command -v brew >/dev/null 2>&1; then
+    if brew list cairo >/dev/null 2>&1; then
+      ok "cairo found"
+    else
+      info "  Installing cairo via Homebrew..."
+      brew install cairo
+      ok "cairo installed"
+    fi
+  fi
+
   # uv
   if command -v uv >/dev/null 2>&1; then
     ok "uv found"
