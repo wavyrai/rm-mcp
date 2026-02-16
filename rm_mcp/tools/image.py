@@ -24,6 +24,7 @@ async def remarkable_image(
     compatibility: bool = False,
     include_ocr: bool = False,
     ctx: Optional[Context] = None,
+    compact_output: bool = False,
 ):
     """
     <usecase>Get an image of a specific page from a reMarkable document.</usecase>
@@ -74,6 +75,7 @@ async def remarkable_image(
     - remarkable_image("Notes", include_ocr=True)  # Get image with OCR text extraction
     </examples>
     """
+    compact = _helpers.is_compact(compact_output)
     try:
         # Resolve background color: use provided value or get from env/default
         if background is None:
@@ -101,6 +103,7 @@ async def remarkable_image(
                     error_type="invalid_format",
                     message=f"Invalid format: '{output_format}'. Supported formats: png, svg",
                     suggestion="Use output_format='png' for raster or 'svg' for vectors.",
+                    compact=compact,
                 )
 
             # Get total page count
@@ -114,6 +117,7 @@ async def remarkable_image(
                         "This may be a PDF/EPUB without annotations. "
                         "Use remarkable_read() to extract text content instead."
                     ),
+                    compact=compact,
                 )
 
             if page < 1 or page > total_pages:
@@ -121,6 +125,7 @@ async def remarkable_image(
                     error_type="page_out_of_range",
                     message=f"Page {page} does not exist. Document has {total_pages} page(s).",
                     suggestion=f"Use page=1 to {total_pages} to view different pages.",
+                    compact=compact,
                 )
 
             # Build resource URI for this page
@@ -138,6 +143,7 @@ async def remarkable_image(
                         error_type="render_failed",
                         message="Failed to render page to SVG.",
                         suggestion="Make sure 'rmc' is installed. Try: uv add rmc",
+                        compact=compact,
                     )
 
                 resource_uri = f"remarkablesvg:///{uri_path}.page-{page}.svg"
@@ -157,6 +163,7 @@ async def remarkable_image(
                             "resource_uri": resource_uri,
                         },
                         hint,
+                        compact=compact,
                     )
                 else:
                     # Return SVG as embedded TextResourceContents with info hint
@@ -195,6 +202,7 @@ async def remarkable_image(
                                 "resource_uri": resource_uri,
                             },
                             hint,
+                            compact=compact,
                         )
                     else:
                         blob_resource = BlobResourceContents(
@@ -221,6 +229,7 @@ async def remarkable_image(
                         suggestion=(
                             "Make sure 'rmc' and 'cairosvg' are installed. Try: uv add rmc cairosvg"
                         ),
+                        compact=compact,
                     )
 
                 # Handle OCR if requested - extract text from the image
@@ -276,7 +285,7 @@ async def remarkable_image(
                         "resource_uri": resource_uri,
                         **ocr_info,
                     }
-                    return _helpers.make_response(response_data, hint)
+                    return _helpers.make_response(response_data, hint, compact=compact)
                 else:
                     # Return PNG as embedded BlobResourceContents with info hint
                     blob_resource = BlobResourceContents(
@@ -301,4 +310,5 @@ async def remarkable_image(
             error_type="image_failed",
             message=str(e),
             suggestion="Check remarkable_status() to verify your connection.",
+            compact=compact,
         )

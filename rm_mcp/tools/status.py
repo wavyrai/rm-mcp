@@ -5,17 +5,20 @@ from rm_mcp.tools import _helpers
 
 
 @mcp.tool(annotations=_helpers.STATUS_ANNOTATIONS)
-def remarkable_status() -> str:
+def remarkable_status(compact_output: bool = False) -> str:
     """
     <usecase>Check connection status and authentication with reMarkable Cloud.</usecase>
     <instructions>
     Returns authentication status and diagnostic information.
     Use this to verify your connection or troubleshoot issues.
+    Includes index statistics when available.
     </instructions>
     <examples>
     - remarkable_status()
+    - remarkable_status(compact_output=True)  # Omit hints
     </examples>
     """
+    compact = _helpers.is_compact(compact_output)
     transport = "cloud"
     connection_info = "environment variable" if _helpers.REMARKABLE_TOKEN else "file (~/.rmapi)"
 
@@ -46,6 +49,16 @@ def remarkable_status() -> str:
         if root != "/":
             result["root_path"] = root
 
+        # Add index stats if available
+        try:
+            from rm_mcp.index import get_instance
+
+            index = get_instance()
+            if index is not None:
+                result.update(index.get_stats())
+        except Exception:
+            pass
+
         hint_parts = [f"Connected successfully via {transport}. Found {doc_count} documents."]
         if root != "/":
             hint_parts.append(f"Filtered to root: {root}")
@@ -54,7 +67,7 @@ def remarkable_status() -> str:
             "or remarkable_recent() for recent documents."
         )
 
-        return _helpers.make_response(result, " ".join(hint_parts))
+        return _helpers.make_response(result, " ".join(hint_parts), compact=compact)
 
     except Exception as e:
         error_msg = str(e)
@@ -74,4 +87,4 @@ def remarkable_status() -> str:
             "4) Add REMARKABLE_TOKEN to your MCP config."
         )
 
-        return _helpers.make_response(result, hint)
+        return _helpers.make_response(result, hint, compact=compact)

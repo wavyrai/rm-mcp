@@ -3,6 +3,7 @@ reMarkable MCP Server initialization.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 from urllib.parse import quote, unquote
@@ -63,48 +64,38 @@ Access documents from your reMarkable tablet. All operations are read-only.
 
 ## Available Tools
 
-- `remarkable_browse(path, query)` - Browse folders or search for documents
-- `remarkable_read(document, content_type, page, grep)` - Read document content with pagination
+- `remarkable_browse(path)` - Browse folders (auto-redirects to read for documents)
+- `remarkable_read(document, page, pages, grep)` - Read document content
 - `remarkable_recent(limit)` - Get recently modified documents
-- `remarkable_search(query, grep, limit)` - Search across multiple documents and return matching content
+- `remarkable_search(query, grep, limit)` - Search by name and indexed content
 - `remarkable_status()` - Check connection and diagnose issues
 - `remarkable_image(document, page, include_ocr)` - Get a PNG image with optional OCR
 
 ## Recommended Workflows
 
 ### Finding and Reading Documents
-1. Use `remarkable_browse(query="keyword")` to search by name
+1. Use `remarkable_search("keyword")` to find documents by name or content
 2. Use `remarkable_read("Document Name")` to get content
-3. Use `remarkable_read("Document", page=2)` to continue reading long documents
-4. Use `remarkable_read("Document", grep="pattern")` to search within a document
+3. Use `remarkable_read("Document", pages="all")` to get complete content in one call
+4. Use `remarkable_read("Document", grep="pattern")` to search within a document (auto-redirects to matching page)
 
 ### Getting Page Images
 Use `remarkable_image` when you need visual context:
 - Hand-drawn diagrams, sketches, or UI mockups
 - Content that text extraction might miss
-- Implementing designs based on hand-drawn wireframes
 
-Example: `remarkable_image("UI Mockup", page=1)` returns a PNG image
-Example: `remarkable_image("Notes", include_ocr=True)` returns image with extracted text
-
-### For Large Documents
-Use pagination to avoid overwhelming context. The response includes:
-- `page` / `total_pages` - current position
-- `more` - true if more content exists
-- `next_page` - page number to request next
-
-### Combining Tools
-- Browse → Read: Find documents first, then read them
-- Recent → Read: Check what was recently modified, then read specific ones
-- Read with grep: Search for specific content within large documents
-- Browse → Image: Find a document then get its visual representation
+### Key Features
+- **Multi-page read**: Use `pages="all"` or `pages="1-3"` to get multiple pages in one call
+- **Grep auto-redirect**: grep automatically finds and returns the matching page
+- **Full-text search**: Reading a document indexes its content for future search
+- **Compact mode**: Use `compact_output=True` on any tool to omit hints and reduce response size
+- **Auto-OCR opt-out**: Use `auto_ocr=False` to skip automatic OCR on empty notebooks
 
 ## MCP Resources
 
 Documents are registered as resources for direct access:
 - `remarkable:///{path}.txt` - Get full extracted text content in one request
 - `remarkableimg:///{path}.page-{N}.png` - Get PNG image of page N (notebooks only)
-- Use resources when you need complete document content without pagination
 
 ## OCR (Sampling Mode Active)
 
@@ -122,6 +113,16 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
         stop_background_loader,
     )
 
+    # Initialize the persistent document index (L2 cache)
+    from rm_mcp import index as _index_mod
+
+    idx = _index_mod.initialize()
+    if idx is not None:
+        # Allow forced rebuild via env var
+        if os.environ.get("REMARKABLE_INDEX_REBUILD"):
+            logger.info("REMARKABLE_INDEX_REBUILD set — clearing index")
+            idx.clear()
+
     logger.info("Cloud mode: starting background loader...")
     task = start_background_loader()
 
@@ -130,6 +131,8 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
     finally:
         # Stop background loader on shutdown (if running)
         await stop_background_loader(task)
+        # Close the document index
+        _index_mod.close()
 
 
 # Initialize FastMCP server with lifespan and instructions

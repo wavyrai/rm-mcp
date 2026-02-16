@@ -5,12 +5,13 @@ from rm_mcp.tools import _helpers
 
 
 @mcp.tool(annotations=_helpers.RECENT_ANNOTATIONS)
-def remarkable_recent(limit: int = 10, include_preview: bool = False) -> str:
+def remarkable_recent(limit: int = 10, include_preview: bool = False, compact_output: bool = False) -> str:
     """
     <usecase>Get your most recently modified documents.</usecase>
     <instructions>
     Returns documents sorted by modification date (newest first).
     Optionally includes a text preview of each document's content.
+    Previews are served from the local index when available (no cloud download).
 
     Use this to quickly find what you were working on recently.
 
@@ -26,6 +27,7 @@ def remarkable_recent(limit: int = 10, include_preview: bool = False) -> str:
     - remarkable_recent(limit=5, include_preview=True)  # With content preview
     </examples>
     """
+    compact = _helpers.is_compact(compact_output)
     try:
         client, collection = _helpers.get_cached_collection()
         items_by_id = _helpers.get_items_by_id(collection)
@@ -56,20 +58,36 @@ def remarkable_recent(limit: int = 10, include_preview: bool = False) -> str:
         results = []
         for doc in documents[:limit]:
             doc_path = _helpers.get_item_path(doc, items_by_id)
+            file_type = _helpers._get_file_type_cached(client, doc)
             doc_info = {
                 "name": doc.VissibleName,
                 "path": _helpers._apply_root_filter(doc_path),
+                "file_type": file_type,
                 "modified": (doc.ModifiedClient if hasattr(doc, "ModifiedClient") else None),
             }
 
             if include_preview:
-                # Download and extract preview (skip notebooks - they need slow OCR)
-                file_type = _helpers._get_file_type_cached(client, doc)
-                if file_type == "notebook":
+                # Try L2 index first (no cloud download needed)
+                l2_preview = None
+                try:
+                    from rm_mcp.index import get_instance
+
+                    index = get_instance()
+                    if index is not None:
+                        l2_preview = index.get_preview(doc.ID, max_chars=200)
+                except Exception:
+                    pass
+
+                if l2_preview:
+                    if len(l2_preview) == 200:
+                        doc_info["preview"] = l2_preview + "..."
+                    else:
+                        doc_info["preview"] = l2_preview
+                elif file_type == "notebook":
                     # Notebooks need OCR for preview, skip for performance
                     doc_info["preview_skipped"] = "notebook (use remarkable_read with include_ocr)"
                 else:
-                    # PDFs and EPUBs have extractable text - fast to preview
+                    # PDFs and EPUBs have extractable text - fall back to cloud download
                     try:
                         raw_doc = client.download(doc)
                         with _helpers._temp_document(raw_doc) as tmp_path:
@@ -82,9 +100,8 @@ def remarkable_recent(limit: int = 10, include_preview: bool = False) -> str:
                                     doc_info["preview"] = preview_text + "..."
                                 else:
                                     doc_info["preview"] = preview_text
-                            # No preview key if empty - cleaner response
                     except Exception:
-                        pass  # No preview key on error - cleaner response
+                        pass
 
             results.append(doc_info)
 
@@ -100,11 +117,12 @@ def remarkable_recent(limit: int = 10, include_preview: bool = False) -> str:
         else:
             hint = "No documents found. Use remarkable_browse('/') to check your library."
 
-        return _helpers.make_response(result, hint)
+        return _helpers.make_response(result, hint, compact=compact)
 
     except Exception as e:
         return _helpers.make_error(
             error_type="recent_failed",
             message=str(e),
             suggestion="Check remarkable_status() to verify your connection.",
+            compact=compact,
         )

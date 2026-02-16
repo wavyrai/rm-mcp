@@ -10,7 +10,7 @@ import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from mcp.types import ToolAnnotations
 
@@ -53,6 +53,45 @@ from rm_mcp.ocr.sampling import (  # noqa: F401
 
 
 # --- Helper functions ---
+
+
+def is_compact(compact_output: bool = False) -> bool:
+    """Check parameter or REMARKABLE_COMPACT env var."""
+    return compact_output or os.environ.get("REMARKABLE_COMPACT", "") in ("1", "true")
+
+
+MAX_OUTPUT_CHARS = int(os.environ.get("REMARKABLE_MAX_OUTPUT_CHARS", "50000"))
+
+
+def parse_pages(pages_str: str, total_pages: int) -> List[int]:
+    """Parse 'all', '1-3', '2,4,5', '1-3,5' into sorted page list.
+
+    Out-of-range pages are clamped to [1, total_pages].
+    """
+    if pages_str.strip().lower() == "all":
+        return list(range(1, total_pages + 1))
+
+    pages: set = set()
+    for part in pages_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            bounds = part.split("-", 1)
+            try:
+                start = max(1, int(bounds[0].strip()))
+                end = min(total_pages, int(bounds[1].strip()))
+                pages.update(range(start, end + 1))
+            except (ValueError, IndexError):
+                continue
+        else:
+            try:
+                p = int(part)
+                if 1 <= p <= total_pages:
+                    pages.add(p)
+            except ValueError:
+                continue
+    return sorted(pages)
 
 
 @contextmanager

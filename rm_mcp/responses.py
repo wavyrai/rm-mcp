@@ -16,19 +16,25 @@ class DateTimeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def make_response(data: Dict[str, Any], hint: str) -> str:
+def make_response(data: Dict[str, Any], hint: str, compact: bool = False) -> str:
     """Create a JSON response with a hint for the model."""
-    data["_hint"] = hint
+    if not compact:
+        data["_hint"] = hint
     return json.dumps(data, indent=2, cls=DateTimeEncoder)
 
 
 def make_error(
-    error_type: str, message: str, suggestion: str, did_you_mean: Optional[List[str]] = None
+    error_type: str,
+    message: str,
+    suggestion: str,
+    did_you_mean: Optional[List[str]] = None,
+    compact: bool = False,
 ) -> str:
     """Create an educational error response."""
-    error: Dict[str, Any] = {
-        "_error": {"type": error_type, "message": message, "suggestion": suggestion}
-    }
-    if did_you_mean:
-        error["_error"]["did_you_mean"] = did_you_mean
+    error_body: Dict[str, Any] = {"type": error_type, "message": message}
+    if not compact:
+        error_body["suggestion"] = suggestion
+        if did_you_mean:
+            error_body["did_you_mean"] = did_you_mean
+    error: Dict[str, Any] = {"_error": error_body}
     return json.dumps(error, indent=2, cls=DateTimeEncoder)

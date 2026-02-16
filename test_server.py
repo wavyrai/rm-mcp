@@ -318,29 +318,6 @@ class TestRemarkableBrowse:
 
     @pytest.mark.asyncio
     @patch(_PATCH_CACHED)
-    async def test_browse_search_mode(self, mock_get_cached):
-        """Test search mode."""
-        mock_client = Mock()
-
-        # Create mock items that have VissibleName
-        mock_doc = Mock()
-        mock_doc.VissibleName = "Test Document"
-        mock_doc.ID = "doc-123"
-        mock_doc.Parent = ""
-        mock_doc.ModifiedClient = "2024-01-15"
-
-        mock_get_cached.return_value = (mock_client, [mock_doc])
-
-        result = await mcp.call_tool("remarkable_browse", {"query": "Test"})
-        data = json.loads(result[0][0].text)
-
-        assert data["mode"] == "search"
-        assert data["query"] == "Test"
-        assert "results" in data
-        assert "_hint" in data
-
-    @pytest.mark.asyncio
-    @patch(_PATCH_CACHED)
     async def test_browse_error_handling(self, mock_get_cached):
         """Test error handling in browse."""
         mock_get_cached.side_effect = RuntimeError("Connection failed")
@@ -1746,10 +1723,9 @@ class TestRemarkableSearch:
     """Test remarkable_search tool."""
 
     @pytest.mark.asyncio
-    @patch("rm_mcp.tools.read.remarkable_read")
     @patch(_PATCH_CACHED)
-    async def test_search_finds_matching_documents(self, mock_get_cached, mock_read):
-        """Test that search finds documents matching the query."""
+    async def test_search_finds_matching_documents(self, mock_get_cached):
+        """Test that search finds documents matching the query (no download without grep)."""
         mock_client = Mock()
 
         doc1 = Mock()
@@ -1778,16 +1754,6 @@ class TestRemarkableSearch:
 
         mock_get_cached.return_value = (mock_client, [doc1, doc2, doc3])
 
-        # Mock remarkable_read to return valid JSON content
-        mock_read.return_value = json.dumps(
-            {
-                "content": "Some meeting content here",
-                "total_pages": 1,
-                "document": "Meeting Notes January",
-                "path": "/Meeting Notes January",
-            }
-        )
-
         result = await mcp.call_tool("remarkable_search", {"query": "Meeting"})
         data = json.loads(result[0][0].text)
 
@@ -1796,6 +1762,9 @@ class TestRemarkableSearch:
         assert "Meeting Notes January" in names
         assert "Meeting Notes February" in names
         assert "Project Plan" not in names
+        # Without grep, no content should be downloaded
+        assert "content" not in data["documents"][0]
+        mock_client.download.assert_not_called()
 
     @pytest.mark.asyncio
     @patch(_PATCH_CACHED)
@@ -1860,9 +1829,8 @@ class TestRemarkableSearch:
         assert data["documents"][0]["grep_matches"] == 1
 
     @pytest.mark.asyncio
-    @patch("rm_mcp.tools.read.remarkable_read")
     @patch(_PATCH_CACHED)
-    async def test_search_limit_clamped(self, mock_get_cached, mock_read):
+    async def test_search_limit_clamped(self, mock_get_cached):
         """Test that search limit is clamped to max of 5."""
         mock_client = Mock()
 
@@ -1879,15 +1847,6 @@ class TestRemarkableSearch:
             docs.append(doc)
 
         mock_get_cached.return_value = (mock_client, docs)
-
-        mock_read.return_value = json.dumps(
-            {
-                "content": "Note content",
-                "total_pages": 1,
-                "document": "Note",
-                "path": "/Note",
-            }
-        )
 
         result = await mcp.call_tool(
             "remarkable_search", {"query": "Note", "limit": 10}
@@ -1947,7 +1906,7 @@ class TestRemarkableReadHappyPath:
 
         assert "content" in data
         assert "Hello world" in data["content"]
-        assert data["document"] == "Typed Notes"
+        assert data["name"] == "Typed Notes"
         assert data["file_type"] == "notebook"
         assert "page" in data
         assert "total_pages" in data
@@ -1991,7 +1950,7 @@ class TestRemarkableReadHappyPath:
 
         assert data["file_type"] == "pdf"
         assert "Annotation on the PDF report" in data["content"]
-        assert data["document"] == "Report.pdf"
+        assert data["name"] == "Report.pdf"
 
     @pytest.mark.asyncio
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
@@ -2193,7 +2152,7 @@ class TestBrowseAutoRedirect:
         # Mock remarkable_read to return a valid read response
         mock_read.return_value = json.dumps(
             {
-                "document": "My Report",
+                "name": "My Report",
                 "path": "/My Report",
                 "content": "Report content here",
                 "page": 1,
@@ -2211,8 +2170,1076 @@ class TestBrowseAutoRedirect:
 
         assert "_redirected_from" in data
         assert data["_redirected_from"] == "browse:/My Report"
-        assert data["document"] == "My Report"
+        assert data["name"] == "My Report"
         assert "content" in data
+
+
+# =============================================================================
+# Test DocumentIndex (SQLite FTS5)
+# =============================================================================
+
+
+class TestDocumentIndex:
+    """Test the DocumentIndex SQLite FTS5 index."""
+
+    def _make_index(self):
+        """Create a fresh in-memory DocumentIndex."""
+        from rm_mcp.index import DocumentIndex
+
+        return DocumentIndex(":memory:")
+
+    def test_schema_creation(self):
+        """Test that schema is created on initialization."""
+        idx = self._make_index()
+        conn = idx._get_connection()
+        # Check tables exist
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        table_names = [r[0] for r in tables]
+        assert "documents" in table_names
+        assert "pages" in table_names
+        assert "pages_fts" in table_names
+        idx.close()
+
+    def test_upsert_and_get_document_hash(self):
+        """Test upserting a document and retrieving its hash."""
+        idx = self._make_index()
+        idx.upsert_document(
+            doc_id="doc-1",
+            doc_hash="hash-abc",
+            name="Test Doc",
+            path="/Test Doc",
+            file_type="notebook",
+        )
+        assert idx.get_document_hash("doc-1") == "hash-abc"
+        assert idx.get_document_hash("nonexistent") is None
+        idx.close()
+
+    def test_upsert_document_updates_existing(self):
+        """Test that upsert updates existing documents."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="hash-1", name="V1")
+        idx.upsert_document(doc_id="doc-1", doc_hash="hash-2", name="V2")
+        assert idx.get_document_hash("doc-1") == "hash-2"
+        idx.close()
+
+    def test_needs_reindex_new_document(self):
+        """Test needs_reindex returns True for unknown documents."""
+        idx = self._make_index()
+        assert idx.needs_reindex("doc-new", "any-hash") is True
+        idx.close()
+
+    def test_needs_reindex_same_hash(self):
+        """Test needs_reindex returns False when hash matches."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="hash-1")
+        assert idx.needs_reindex("doc-1", "hash-1") is False
+        idx.close()
+
+    def test_needs_reindex_different_hash_clears_pages(self):
+        """Test needs_reindex returns True and clears pages when hash differs."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="hash-1")
+        idx.upsert_page("doc-1", 1, "old content", "typed_text")
+        assert idx.needs_reindex("doc-1", "hash-2") is True
+        # Pages should have been cleared
+        assert idx.get_page_ocr("doc-1", 1) is None
+        idx.close()
+
+    def test_upsert_and_get_page_ocr(self):
+        """Test upserting a page and retrieving OCR content."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+        idx.upsert_page("doc-1", 1, "Hello world from OCR", "ocr", "sampling")
+        result = idx.get_page_ocr("doc-1", 1, "sampling")
+        assert result == "Hello world from OCR"
+        # Non-existent page
+        assert idx.get_page_ocr("doc-1", 99) is None
+        idx.close()
+
+    def test_store_extraction_result(self):
+        """Test store_extraction_result round-trip."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+        result = {
+            "typed_text": ["Typed content here"],
+            "highlights": ["Important highlight"],
+            "handwritten_text": ["OCR text from handwriting"],
+            "pages": 1,
+            "ocr_backend": "sampling",
+        }
+        idx.store_extraction_result("doc-1", result)
+
+        # Verify typed text was stored
+        conn = idx._get_connection()
+        row = conn.execute(
+            "SELECT content FROM pages WHERE doc_id='doc-1' AND content_type='typed_text'"
+        ).fetchone()
+        assert row is not None
+        assert "Typed content here" in row["content"]
+
+        # Verify highlight was stored
+        row = conn.execute(
+            "SELECT content FROM pages WHERE doc_id='doc-1' AND content_type='highlight'"
+        ).fetchone()
+        assert row is not None
+        assert "Important highlight" in row["content"]
+
+        # Verify OCR was stored
+        row = conn.execute(
+            "SELECT content FROM pages WHERE doc_id='doc-1' AND content_type='ocr'"
+        ).fetchone()
+        assert row is not None
+        assert "OCR text from handwriting" in row["content"]
+        idx.close()
+
+    def test_fts5_search_basic(self):
+        """Test basic FTS5 search."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Notes", path="/Notes", file_type="notebook")
+        idx.upsert_page("doc-1", 0, "The quantum physics experiment yielded results", "typed_text")
+
+        results = idx.search("quantum")
+        assert len(results) == 1
+        assert results[0]["doc_id"] == "doc-1"
+        assert results[0]["name"] == "Notes"
+        assert "quantum" in results[0]["snippet"].lower()
+        idx.close()
+
+    def test_fts5_search_phrase(self):
+        """Test FTS5 search with a phrase query."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Meeting", path="/Meeting")
+        idx.upsert_page("doc-1", 0, "The project deadline is next Friday", "typed_text")
+
+        results = idx.search('"project deadline"')
+        assert len(results) == 1
+        idx.close()
+
+    def test_fts5_search_no_results(self):
+        """Test FTS5 search with no matching results."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Notes", path="/Notes")
+        idx.upsert_page("doc-1", 0, "Some content about cooking", "typed_text")
+
+        results = idx.search("astrophysics")
+        assert len(results) == 0
+        idx.close()
+
+    def test_fts5_search_multiple_documents(self):
+        """Test FTS5 search across multiple documents."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Doc A", path="/Doc A")
+        idx.upsert_document(doc_id="doc-2", doc_hash="h2", name="Doc B", path="/Doc B")
+        idx.upsert_page("doc-1", 0, "Machine learning algorithms", "typed_text")
+        idx.upsert_page("doc-2", 0, "Deep learning neural networks", "typed_text")
+
+        results = idx.search("learning")
+        assert len(results) == 2
+        idx.close()
+
+    def test_fts5_search_deduplicates_by_doc(self):
+        """Test FTS5 search deduplicates when multiple pages of same doc match."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Notes", path="/Notes")
+        idx.upsert_page("doc-1", 0, "Python programming basics", "typed_text")
+        idx.upsert_page("doc-1", 0, "Python advanced features", "ocr", "sampling")
+
+        results = idx.search("python")
+        assert len(results) == 1  # Should be deduplicated
+        assert results[0]["doc_id"] == "doc-1"
+        idx.close()
+
+    def test_fts5_search_invalid_syntax(self):
+        """Test FTS5 search gracefully handles invalid query syntax."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Notes", path="/Notes")
+        idx.upsert_page("doc-1", 0, "Some content", "typed_text")
+
+        # Unmatched quote is invalid FTS5 syntax
+        results = idx.search('"unmatched')
+        assert results == []
+        idx.close()
+
+    def test_upsert_page_updates_fts(self):
+        """Test that updating a page also updates the FTS index."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Notes", path="/Notes")
+        idx.upsert_page("doc-1", 0, "original content about cats", "typed_text")
+
+        # Should find "cats"
+        assert len(idx.search("cats")) == 1
+        # Should NOT find "dogs"
+        assert len(idx.search("dogs")) == 0
+
+        # Update the page content
+        idx.upsert_page("doc-1", 0, "updated content about dogs", "typed_text")
+
+        # Now should find "dogs" but NOT "cats"
+        assert len(idx.search("dogs")) == 1
+        assert len(idx.search("cats")) == 0
+        idx.close()
+
+    def test_get_stats(self):
+        """Test get_stats returns correct counts."""
+        idx = self._make_index()
+        assert idx.get_stats()["index_documents"] == 0
+        assert idx.get_stats()["index_pages"] == 0
+
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+        idx.upsert_document(doc_id="doc-2", doc_hash="h2")
+        idx.upsert_page("doc-1", 0, "content", "typed_text")
+
+        stats = idx.get_stats()
+        assert stats["index_documents"] == 2
+        assert stats["index_pages"] == 1
+        assert stats["index_path"] == ":memory:"
+        idx.close()
+
+    def test_clear(self):
+        """Test clear removes all data."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+        idx.upsert_page("doc-1", 0, "content", "typed_text")
+        idx.clear()
+        assert idx.get_stats()["index_documents"] == 0
+        assert idx.get_stats()["index_pages"] == 0
+        idx.close()
+
+    def test_rebuild(self):
+        """Test rebuild does not raise."""
+        idx = self._make_index()
+        idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+        idx.upsert_page("doc-1", 0, "some text", "typed_text")
+        idx.rebuild()  # Should not raise
+        # Search should still work after rebuild
+        results = idx.search("text")
+        assert len(results) == 1
+        idx.close()
+
+    def test_graceful_degradation(self):
+        """Test that get_instance returns None when not initialized."""
+        import rm_mcp.index as index_mod
+
+        saved = index_mod._instance
+        try:
+            index_mod._instance = None
+            assert index_mod.get_instance() is None
+        finally:
+            index_mod._instance = saved
+
+
+class TestDocumentIndexSingleton:
+    """Test the singleton lifecycle of DocumentIndex."""
+
+    def test_initialize_and_close(self):
+        """Test initialize creates instance and close removes it."""
+        import rm_mcp.index as index_mod
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        try:
+            idx = index_mod.initialize(":memory:")
+            assert idx is not None
+            assert index_mod.get_instance() is idx
+            index_mod.close()
+            assert index_mod.get_instance() is None
+        finally:
+            index_mod._instance = saved
+
+    def test_initialize_returns_existing(self):
+        """Test that initialize returns existing instance on second call."""
+        import rm_mcp.index as index_mod
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        try:
+            idx1 = index_mod.initialize(":memory:")
+            idx2 = index_mod.initialize(":memory:")
+            assert idx1 is idx2
+            index_mod.close()
+        finally:
+            index_mod._instance = saved
+
+
+class TestSearchWithFTS:
+    """Test remarkable_search tool with FTS5 integration."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools.read.remarkable_read")
+    @patch(_PATCH_CACHED)
+    async def test_search_returns_fts_content_matches(self, mock_get_cached, mock_read):
+        """Test that search returns FTS content matches alongside name matches."""
+        import rm_mcp.index as index_mod
+
+        # Set up a temporary in-memory index
+        saved = index_mod._instance
+        index_mod._instance = None
+        idx = index_mod.initialize(":memory:")
+        try:
+            # Index some content
+            idx.upsert_document(
+                doc_id="doc-indexed",
+                doc_hash="h1",
+                name="Old Journal",
+                path="/Old Journal",
+                file_type="notebook",
+            )
+            idx.upsert_page("doc-indexed", 0, "The quarterly budget review showed growth", "typed_text")
+
+            # Set up collection with a different document (name match)
+            mock_client = Mock()
+            doc = Mock()
+            doc.VissibleName = "Budget Report"
+            doc.ID = "doc-budget"
+            doc.Parent = ""
+            doc.is_folder = False
+            doc.is_cloud_archived = False
+            doc.ModifiedClient = "2024-06-01T00:00:00Z"
+            mock_get_cached.return_value = (mock_client, [doc])
+
+            mock_read.return_value = json.dumps(
+                {
+                    "content": "Budget details here",
+                    "total_pages": 1,
+                    "document": "Budget Report",
+                    "path": "/Budget Report",
+                }
+            )
+
+            result = await mcp.call_tool("remarkable_search", {"query": "budget"})
+            data = json.loads(result[0][0].text)
+
+            assert data["count"] >= 1
+            match_types = [d.get("match_type") for d in data["documents"]]
+            # Should have at least the FTS content match
+            assert "content" in match_types
+            # Should include index_coverage
+            assert "index_coverage" in data
+            assert "indexed" in data["index_coverage"]
+            assert "total" in data["index_coverage"]
+        finally:
+            index_mod.close()
+            index_mod._instance = saved
+
+    @pytest.mark.asyncio
+    @patch(_PATCH_CACHED)
+    async def test_search_fts_only_results(self, mock_get_cached):
+        """Test search returns FTS results even when no name matches exist."""
+        import rm_mcp.index as index_mod
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        idx = index_mod.initialize(":memory:")
+        try:
+            idx.upsert_document(
+                doc_id="doc-1",
+                doc_hash="h1",
+                name="Random Name",
+                path="/Random Name",
+                file_type="notebook",
+            )
+            idx.upsert_page("doc-1", 0, "Photosynthesis is the process of converting sunlight", "typed_text")
+
+            mock_client = Mock()
+            mock_get_cached.return_value = (mock_client, [])
+
+            result = await mcp.call_tool("remarkable_search", {"query": "photosynthesis"})
+            data = json.loads(result[0][0].text)
+
+            assert data["count"] == 1
+            assert data["documents"][0]["match_type"] == "content"
+            assert "photosynthesis" in data["documents"][0]["snippet"].lower()
+        finally:
+            index_mod.close()
+            index_mod._instance = saved
+
+
+class TestStatusWithIndex:
+    """Test remarkable_status shows index stats."""
+
+    @pytest.mark.asyncio
+    @patch(_PATCH_CACHED)
+    async def test_status_includes_index_stats(self, mock_get_cached):
+        """Test that status includes index statistics when index is available."""
+        import rm_mcp.index as index_mod
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        idx = index_mod.initialize(":memory:")
+        try:
+            idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+            idx.upsert_page("doc-1", 0, "some content", "typed_text")
+
+            mock_client = Mock()
+            mock_get_cached.return_value = (mock_client, [])
+
+            result = await mcp.call_tool("remarkable_status", {})
+            data = json.loads(result[0][0].text)
+
+            assert data["authenticated"] is True
+            assert "index_documents" in data
+            assert data["index_documents"] == 1
+            assert "index_pages" in data
+            assert data["index_pages"] == 1
+            assert "index_path" in data
+        finally:
+            index_mod.close()
+            index_mod._instance = saved
+
+
+class TestCacheL2Integration:
+    """Test L1/L2 cache integration."""
+
+    def test_page_ocr_l2_write_through(self):
+        """Test that cache_page_ocr writes to L2 index."""
+        import rm_mcp.index as index_mod
+        from rm_mcp.cache import cache_page_ocr
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        idx = index_mod.initialize(":memory:")
+        try:
+            idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+            cache_page_ocr("doc-1", 1, "sampling", "OCR text from page 1")
+
+            # Verify it was written to L2
+            stored = idx.get_page_ocr("doc-1", 1, "sampling")
+            assert stored == "OCR text from page 1"
+        finally:
+            index_mod.close()
+            index_mod._instance = saved
+
+    def test_page_ocr_l2_read_through(self):
+        """Test that get_cached_page_ocr falls back to L2 on L1 miss."""
+        import rm_mcp.index as index_mod
+        from rm_mcp.cache import _page_ocr_cache, get_cached_page_ocr
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        idx = index_mod.initialize(":memory:")
+        try:
+            idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+            # Write directly to L2 (bypass L1)
+            idx.upsert_page("doc-1", 1, "L2 cached text", "ocr", "sampling")
+
+            # Ensure L1 is empty for this key
+            cache_key = ("doc-1", 1, "sampling")
+            _page_ocr_cache.pop(cache_key, None)
+
+            # Should find it via L2
+            result = get_cached_page_ocr("doc-1", 1, "sampling")
+            assert result == "L2 cached text"
+
+            # Should now be promoted to L1
+            assert cache_key in _page_ocr_cache
+        finally:
+            # Clean up L1 cache
+            _page_ocr_cache.pop(("doc-1", 1, "sampling"), None)
+            index_mod.close()
+            index_mod._instance = saved
+
+    def test_ocr_result_l2_write_through(self):
+        """Test that cache_ocr_result writes extraction results to L2."""
+        import rm_mcp.index as index_mod
+        from rm_mcp.cache import cache_ocr_result
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        idx = index_mod.initialize(":memory:")
+        try:
+            idx.upsert_document(doc_id="doc-1", doc_hash="h1")
+            result = {
+                "typed_text": ["Hello from extraction"],
+                "highlights": [],
+                "handwritten_text": [],
+                "pages": 1,
+            }
+            cache_ocr_result("doc-1", result)
+
+            # Verify typed text was stored in L2
+            conn = idx._get_connection()
+            row = conn.execute(
+                "SELECT content FROM pages WHERE doc_id='doc-1' AND content_type='typed_text'"
+            ).fetchone()
+            assert row is not None
+            assert "Hello from extraction" in row["content"]
+        finally:
+            index_mod.close()
+            index_mod._instance = saved
+
+
+# =============================================================================
+# Test Compact Mode
+# =============================================================================
+
+
+class TestCompactMode:
+    """Test compact mode across responses and tools."""
+
+    def test_make_response_compact_omits_hint(self):
+        """Test that make_response with compact=True omits _hint."""
+        result = make_response({"key": "value"}, "This is a hint", compact=True)
+        parsed = json.loads(result)
+        assert parsed["key"] == "value"
+        assert "_hint" not in parsed
+
+    def test_make_response_non_compact_includes_hint(self):
+        """Test that make_response with compact=False includes _hint."""
+        result = make_response({"key": "value"}, "This is a hint", compact=False)
+        parsed = json.loads(result)
+        assert parsed["_hint"] == "This is a hint"
+
+    def test_make_error_compact_omits_suggestion(self):
+        """Test that make_error with compact=True omits suggestion and did_you_mean."""
+        result = make_error(
+            "test_err", "msg", "suggestion", did_you_mean=["a", "b"], compact=True
+        )
+        parsed = json.loads(result)
+        assert parsed["_error"]["type"] == "test_err"
+        assert parsed["_error"]["message"] == "msg"
+        assert "suggestion" not in parsed["_error"]
+        assert "did_you_mean" not in parsed["_error"]
+
+    def test_make_error_non_compact_includes_suggestion(self):
+        """Test that make_error with compact=False includes suggestion."""
+        result = make_error(
+            "test_err", "msg", "suggestion", did_you_mean=["a"], compact=False
+        )
+        parsed = json.loads(result)
+        assert parsed["_error"]["suggestion"] == "suggestion"
+        assert parsed["_error"]["did_you_mean"] == ["a"]
+
+    def test_is_compact_param(self):
+        """Test is_compact with parameter."""
+        from rm_mcp.tools._helpers import is_compact
+
+        assert is_compact(True) is True
+        assert is_compact(False) is False
+
+    def test_is_compact_env_var(self):
+        """Test is_compact with env var."""
+        from rm_mcp.tools._helpers import is_compact
+
+        with patch.dict(os.environ, {"REMARKABLE_COMPACT": "1"}):
+            assert is_compact(False) is True
+        with patch.dict(os.environ, {"REMARKABLE_COMPACT": "true"}):
+            assert is_compact(False) is True
+        with patch.dict(os.environ, {"REMARKABLE_COMPACT": "0"}):
+            assert is_compact(False) is False
+
+    @pytest.mark.asyncio
+    @patch(_PATCH_CACHED)
+    async def test_tool_with_compact_output(self, mock_get_cached):
+        """Test that a tool with compact_output=True omits _hint."""
+        mock_client = Mock()
+        mock_get_cached.return_value = (mock_client, [])
+
+        result = await mcp.call_tool(
+            "remarkable_status", {"compact_output": True}
+        )
+        data = json.loads(result[0][0].text)
+
+        assert data["authenticated"] is True
+        assert "_hint" not in data
+
+
+# =============================================================================
+# Test parse_pages
+# =============================================================================
+
+
+class TestParsePages:
+    """Test the parse_pages utility function."""
+
+    def test_all(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        assert parse_pages("all", 5) == [1, 2, 3, 4, 5]
+
+    def test_range(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        assert parse_pages("1-3", 10) == [1, 2, 3]
+
+    def test_individual(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        assert parse_pages("2,4,5", 10) == [2, 4, 5]
+
+    def test_mixed(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        assert parse_pages("1-3,5", 10) == [1, 2, 3, 5]
+
+    def test_out_of_range_clamped(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        result = parse_pages("1-100", 5)
+        assert result == [1, 2, 3, 4, 5]
+
+    def test_invalid_input(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        assert parse_pages("abc", 5) == []
+
+    def test_empty_string(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        assert parse_pages("", 5) == []
+
+    def test_below_range(self):
+        from rm_mcp.tools._helpers import parse_pages
+
+        result = parse_pages("0", 5)
+        assert result == []
+
+
+# =============================================================================
+# Test Multi-Page Read
+# =============================================================================
+
+
+class TestMultiPageRead:
+    """Test multi-page read functionality."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_notebook_pages_all(self, mock_get_cached, mock_extract, mock_file_type):
+        """Test reading all pages from a notebook."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Multi Page Notes"
+        doc.ID = "doc-mp"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip"
+
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": ["Page one content", "Page two content", "Page three content"],
+            "pages": 3,
+            "ocr_backend": "sampling",
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read", {"document": "Multi Page Notes", "pages": "all"}
+        )
+        data = json.loads(result[0][0].text)
+
+        assert "pages" in data
+        assert data["pages"] == [1, 2, 3]
+        assert data["total_pages"] == 3
+        assert "Page one content" in data["content"]
+        assert "Page two content" in data["content"]
+        assert "Page three content" in data["content"]
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_notebook_pages_range(self, mock_get_cached, mock_extract, mock_file_type):
+        """Test reading a page range from a notebook."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Range Notes"
+        doc.ID = "doc-range"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip"
+
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": ["P1", "P2", "P3", "P4", "P5"],
+            "pages": 5,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read", {"document": "Range Notes", "pages": "2-4"}
+        )
+        data = json.loads(result[0][0].text)
+
+        assert data["pages"] == [2, 3, 4]
+        assert "P2" in data["content"]
+        assert "P3" in data["content"]
+        assert "P4" in data["content"]
+        assert "P1" not in data["content"]
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_pdf_pages_all(self, mock_get_cached, mock_extract, mock_file_type):
+        """Test reading PDF with pages='all' returns full text."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Full PDF"
+        doc.ID = "doc-fullpdf"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "pdf"
+        mock_client.download.return_value = b"fake-zip"
+
+        mock_extract.return_value = {
+            "typed_text": ["Full PDF annotation content that spans many pages."],
+            "highlights": [],
+            "handwritten_text": [],
+            "pages": 1,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read", {"document": "Full PDF", "pages": "all"}
+        )
+        data = json.loads(result[0][0].text)
+
+        assert data["more"] is False
+        assert "Full PDF annotation content" in data["content"]
+
+
+# =============================================================================
+# Test Grep Auto-Redirect
+# =============================================================================
+
+
+class TestGrepAutoRedirect:
+    """Test grep auto-redirect functionality in remarkable_read."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_grep_redirects_to_matching_page(
+        self, mock_get_cached, mock_extract, mock_file_type
+    ):
+        """Test that grep auto-redirects from page 1 to matching page."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Redirect Test"
+        doc.ID = "doc-redir"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip"
+
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": [
+                "Nothing interesting here",
+                "Also nothing",
+                "The keyword is found here",
+            ],
+            "pages": 3,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read",
+            {"document": "Redirect Test", "page": 1, "grep": "keyword"},
+        )
+        data = json.loads(result[0][0].text)
+
+        # Should auto-redirect to page 3 (where "keyword" is found)
+        assert data["page"] == 3
+        assert data["grep_redirected_from"] == 1
+        assert data["grep_matches"] > 0
+        assert "keyword" in data["content"]
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_grep_no_match_anywhere_still_errors(
+        self, mock_get_cached, mock_extract, mock_file_type
+    ):
+        """Test that grep with no match anywhere returns error."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "No Match Doc"
+        doc.ID = "doc-nomatch2"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip"
+
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": ["Page one text", "Page two text"],
+            "pages": 2,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read",
+            {"document": "No Match Doc", "grep": "nonexistent_term_xyz"},
+        )
+        data = json.loads(result[0][0].text)
+
+        assert "_error" in data
+        assert data["_error"]["type"] == "no_grep_matches"
+
+
+# =============================================================================
+# Test Search Performance (no download without grep)
+# =============================================================================
+
+
+class TestSearchPerformance:
+    """Test that search avoids unnecessary downloads."""
+
+    @pytest.mark.asyncio
+    @patch(_PATCH_CACHED)
+    async def test_search_without_grep_no_download(self, mock_get_cached):
+        """Test that search without grep does not call remarkable_read or download."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Test Note"
+        doc.ID = "doc-test"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+
+        result = await mcp.call_tool("remarkable_search", {"query": "Test"})
+        data = json.loads(result[0][0].text)
+
+        assert data["count"] == 1
+        assert data["documents"][0]["match_type"] == "name"
+        # No content downloaded
+        assert "content" not in data["documents"][0]
+        mock_client.download.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools.read.remarkable_read")
+    @patch(_PATCH_CACHED)
+    async def test_search_with_grep_downloads(self, mock_get_cached, mock_read):
+        """Test that search with grep falls back to download when no L2 cache."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Grep Doc"
+        doc.ID = "doc-grep"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+
+        mock_read.return_value = json.dumps(
+            {
+                "content": "Found the pattern here",
+                "total_pages": 1,
+                "name": "Grep Doc",
+                "path": "/Grep Doc",
+                "grep": "pattern",
+                "grep_matches": 1,
+            }
+        )
+
+        result = await mcp.call_tool(
+            "remarkable_search", {"query": "Grep", "grep": "pattern"}
+        )
+        data = json.loads(result[0][0].text)
+
+        assert data["count"] == 1
+        assert data["documents"][0].get("grep_matches", 0) >= 0
+
+
+# =============================================================================
+# Test L2 Preview
+# =============================================================================
+
+
+class TestL2Preview:
+    """Test L2 index preview for recent and search."""
+
+    @pytest.mark.asyncio
+    @patch(_PATCH_CACHED)
+    async def test_recent_preview_from_index(self, mock_get_cached):
+        """Test that recent uses L2 index for preview."""
+        import rm_mcp.index as index_mod
+
+        saved = index_mod._instance
+        index_mod._instance = None
+        idx = index_mod.initialize(":memory:")
+        try:
+            mock_client = Mock()
+
+            doc = Mock()
+            doc.VissibleName = "Indexed Doc"
+            doc.ID = "doc-indexed"
+            doc.Parent = ""
+            doc.is_folder = False
+            doc.is_cloud_archived = False
+            doc.ModifiedClient = "2024-06-01T00:00:00Z"
+
+            mock_get_cached.return_value = (mock_client, [doc])
+
+            # Populate L2 index
+            idx.upsert_document(doc_id="doc-indexed", doc_hash="h1")
+            idx.upsert_page("doc-indexed", 0, "Preview from L2 cache", "typed_text")
+
+            with patch("rm_mcp.tools._helpers._get_file_type_cached", return_value="notebook"):
+                result = await mcp.call_tool(
+                    "remarkable_recent", {"limit": 5, "include_preview": True}
+                )
+                data = json.loads(result[0][0].text)
+
+            assert data["count"] == 1
+            assert "preview" in data["documents"][0]
+            assert "Preview from L2 cache" in data["documents"][0]["preview"]
+            # Should NOT have downloaded from cloud
+            mock_client.download.assert_not_called()
+        finally:
+            index_mod.close()
+            index_mod._instance = saved
+
+
+# =============================================================================
+# Test Index New Methods
+# =============================================================================
+
+
+class TestIndexNewMethods:
+    """Test get_preview, get_content_snippet, get_indexed_document_count."""
+
+    def _make_index(self):
+        from rm_mcp.index import DocumentIndex
+
+        return DocumentIndex(":memory:")
+
+    def test_get_preview_typed_text(self):
+        idx = self._make_index()
+        idx.upsert_document(doc_id="d1", doc_hash="h1")
+        idx.upsert_page("d1", 0, "Hello world preview", "typed_text")
+        assert idx.get_preview("d1") == "Hello world preview"
+        idx.close()
+
+    def test_get_preview_prefers_typed_over_ocr(self):
+        idx = self._make_index()
+        idx.upsert_document(doc_id="d1", doc_hash="h1")
+        idx.upsert_page("d1", 0, "Typed content", "typed_text")
+        idx.upsert_page("d1", 0, "OCR content", "ocr", "sampling")
+        assert idx.get_preview("d1") == "Typed content"
+        idx.close()
+
+    def test_get_preview_none_when_empty(self):
+        idx = self._make_index()
+        idx.upsert_document(doc_id="d1", doc_hash="h1")
+        assert idx.get_preview("d1") is None
+        idx.close()
+
+    def test_get_content_snippet(self):
+        idx = self._make_index()
+        idx.upsert_document(doc_id="d1", doc_hash="h1")
+        idx.upsert_page("d1", 0, "Some long content", "typed_text")
+        snippet = idx.get_content_snippet("d1", max_chars=10)
+        assert len(snippet) == 10
+        idx.close()
+
+    def test_get_content_snippet_none_when_empty(self):
+        idx = self._make_index()
+        idx.upsert_document(doc_id="d1", doc_hash="h1")
+        assert idx.get_content_snippet("d1") is None
+        idx.close()
+
+    def test_get_indexed_document_count(self):
+        idx = self._make_index()
+        assert idx.get_indexed_document_count() == 0
+        idx.upsert_document(doc_id="d1", doc_hash="h1")
+        idx.upsert_page("d1", 0, "content", "typed_text")
+        assert idx.get_indexed_document_count() == 1
+        idx.upsert_document(doc_id="d2", doc_hash="h2")
+        # d2 has no pages
+        assert idx.get_indexed_document_count() == 1
+        idx.upsert_page("d2", 0, "more", "typed_text")
+        assert idx.get_indexed_document_count() == 2
+        idx.close()
+
+
+# =============================================================================
+# Test Auto-OCR Opt-Out
+# =============================================================================
+
+
+class TestAutoOcrOptOut:
+    """Test auto_ocr=False prevents OCR auto-retry."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_auto_ocr_false_returns_empty(
+        self, mock_get_cached, mock_extract, mock_file_type
+    ):
+        """Test that auto_ocr=False returns empty without OCR retry."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Empty Notebook"
+        doc.ID = "doc-empty"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip"
+
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": [],
+            "pages": 1,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read",
+            {"document": "Empty Notebook", "auto_ocr": False},
+        )
+        data = json.loads(result[0][0].text)
+
+        # Should return empty content without OCR auto-retry
+        assert data.get("content") == ""
+        assert data.get("total_chars") == 0
+        # Should NOT have _ocr_auto_enabled
+        assert "_ocr_auto_enabled" not in data
 
 
 if __name__ == "__main__":

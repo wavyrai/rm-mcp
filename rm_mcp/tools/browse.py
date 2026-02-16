@@ -1,38 +1,35 @@
-"""remarkable_browse tool — browse library and search by name."""
-
-from typing import Optional
+"""remarkable_browse tool — browse library folders."""
 
 from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
 
 
 @mcp.tool(annotations=_helpers.BROWSE_ANNOTATIONS)
-async def remarkable_browse(path: str = "/", query: Optional[str] = None) -> str:
+async def remarkable_browse(path: str = "/", compact_output: bool = False) -> str:
     """
-    <usecase>Browse your reMarkable library or search for documents.</usecase>
+    <usecase>Browse your reMarkable library folders.</usecase>
     <instructions>
-    Two modes:
-    1. Browse mode (default): List contents of a folder
-       - Use path="/" for root folder
-       - Use path="/FolderName" to navigate into folders
-    2. Search mode: Find documents by name
-       - Set query="search term" to search across all documents
+    List contents of a folder on your reMarkable tablet.
+    - Use path="/" for root folder
+    - Use path="/FolderName" to navigate into folders
+    - If you browse to a document path, it auto-redirects to remarkable_read
 
-    Results include document names, types, and modification dates.
+    Results include document names, types, paths, and modification dates.
 
     Note: If REMARKABLE_ROOT_PATH is configured, only documents within that
     folder are accessible. Paths are relative to the root path.
+
+    To search by name or content, use remarkable_search() instead.
     </instructions>
     <parameters>
     - path: Folder path to browse (default: "/" for root)
-    - query: Search term to find documents by name (optional, triggers search mode)
     </parameters>
     <examples>
     - remarkable_browse()  # List root folder
     - remarkable_browse("/Work")  # List Work folder
-    - remarkable_browse(query="meeting")  # Search for "meeting"
     </examples>
     """
+    compact = _helpers.is_compact(compact_output)
     try:
         client, collection = _helpers.get_cached_collection()
         items_by_id = _helpers.get_items_by_id(collection)
@@ -41,56 +38,6 @@ async def remarkable_browse(path: str = "/", query: Optional[str] = None) -> str
         root = _helpers._get_root_path()
         # Resolve user path to actual device path
         actual_path = _helpers._resolve_root_path(path)
-
-        # Search mode
-        if query:
-            query_lower = query.lower()
-            matches = []
-
-            for item in collection:
-                # Skip cloud-archived items
-                if _helpers._is_cloud_archived(item):
-                    continue
-                item_path = _helpers.get_item_path(item, items_by_id)
-                # Filter by root path
-                if not _helpers._is_within_root(item_path, root):
-                    continue
-                if query_lower in item.VissibleName.lower():
-                    matches.append(
-                        {
-                            "name": item.VissibleName,
-                            "path": _helpers._apply_root_filter(item_path),
-                            "type": "folder" if item.is_folder else "document",
-                            "modified": (
-                                item.ModifiedClient if hasattr(item, "ModifiedClient") else None
-                            ),
-                        }
-                    )
-
-            matches.sort(key=lambda x: x["name"])
-
-            result = {"mode": "search", "query": query, "count": len(matches), "results": matches}
-
-            if matches:
-                first_doc = next((m for m in matches if m["type"] == "document"), None)
-                if first_doc:
-                    hint = (
-                        f"Found {len(matches)} results. "
-                        f"To read a document: remarkable_read('{first_doc['name']}')."
-                    )
-                else:
-                    hint = (
-                        f"Found {len(matches)} folders. "
-                        f"To browse one: remarkable_browse('{matches[0]['path']}')."
-                    )
-            else:
-                hint = (
-                    f"No results for '{query}'. "
-                    "Try remarkable_browse('/') to see all files, "
-                    "or use a different search term."
-                )
-
-            return _helpers.make_response(result, hint)
 
         # Browse mode - use actual_path (with root applied)
         if actual_path == "/" or actual_path == "":
@@ -129,6 +76,7 @@ async def remarkable_browse(path: str = "/", query: Optional[str] = None) -> str
                                     "is outside the configured root path."
                                 ),
                                 suggestion="Check REMARKABLE_ROOT_PATH configuration.",
+                                compact=compact,
                             )
                         # Call remarkable_read internally and add redirect note
                         from rm_mcp.tools import read as _read_mod
@@ -173,6 +121,7 @@ async def remarkable_browse(path: str = "/", query: Optional[str] = None) -> str
                         message=f"Folder not found: '{part}'",
                         suggestion=suggestion,
                         did_you_mean=(available_folders[:5] if available_folders else None),
+                        compact=compact,
                     )
 
             target_parent = current_parent
@@ -189,10 +138,14 @@ async def remarkable_browse(path: str = "/", query: Optional[str] = None) -> str
             if item.is_folder:
                 folders.append({"name": item.VissibleName, "id": item.ID})
             else:
+                item_path = _helpers.get_item_path(item, items_by_id)
+                file_type = _helpers._get_file_type_cached(client, item)
                 documents.append(
                     {
                         "name": item.VissibleName,
                         "id": item.ID,
+                        "path": _helpers._apply_root_filter(item_path),
+                        "file_type": file_type,
                         "modified": (
                             item.ModifiedClient if hasattr(item, "ModifiedClient") else None
                         ),
@@ -212,11 +165,12 @@ async def remarkable_browse(path: str = "/", query: Optional[str] = None) -> str
         if not folders and not documents:
             hint_parts.append("This folder is empty.")
 
-        return _helpers.make_response(result, " ".join(hint_parts))
+        return _helpers.make_response(result, " ".join(hint_parts), compact=compact)
 
     except Exception as e:
         return _helpers.make_error(
             error_type="browse_failed",
             message=str(e),
             suggestion="Check remarkable_status() to verify your connection.",
+            compact=compact,
         )

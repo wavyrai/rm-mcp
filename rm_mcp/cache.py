@@ -180,6 +180,9 @@ def get_cached_page_ocr(
     """
     Get cached OCR result for a specific page.
 
+    Checks L1 (in-memory) first, then falls back to L2 (SQLite index).
+    On L2 hit, promotes the result back to L1.
+
     Args:
         doc_id: Document ID
         page: Page number (1-indexed)
@@ -188,6 +191,7 @@ def get_cached_page_ocr(
     Returns:
         Cached OCR text or None if not cached/expired
     """
+    # L1: in-memory cache
     cache_key = (doc_id, page, backend)
     if cache_key in _page_ocr_cache:
         cached = _page_ocr_cache[cache_key]
@@ -195,6 +199,25 @@ def get_cached_page_ocr(
             return cached["text"]
         # Expired, remove it
         _page_ocr_cache.pop(cache_key, None)
+
+    # L2: SQLite index
+    try:
+        from rm_mcp.index import get_instance
+
+        index = get_instance()
+        if index is not None:
+            text = index.get_page_ocr(doc_id, page, backend)
+            if text is not None:
+                # Promote to L1
+                _page_ocr_cache[cache_key] = {
+                    "text": text,
+                    "timestamp": time.time(),
+                }
+                logger.debug(f"L2 cache hit for page OCR: {doc_id} p{page}")
+                return text
+    except Exception:
+        logger.debug("L2 read failed for page OCR", exc_info=True)
+
     return None
 
 
@@ -207,12 +230,15 @@ def cache_page_ocr(
     """
     Cache OCR result for a specific page.
 
+    Writes to both L1 (in-memory) and L2 (SQLite index).
+
     Args:
         doc_id: Document ID
         page: Page number (1-indexed)
         backend: OCR backend used ("sampling")
         text: OCR text result
     """
+    # L1: in-memory cache
     cache_key = (doc_id, page, backend)
     _page_ocr_cache[cache_key] = {
         "text": text,
@@ -222,6 +248,16 @@ def cache_page_ocr(
         keys_to_remove = list(_page_ocr_cache.keys())[:len(_page_ocr_cache) - _MAX_PAGE_OCR_CACHE_SIZE]
         for key in keys_to_remove:
             del _page_ocr_cache[key]
+
+    # L2: write-through to SQLite index
+    try:
+        from rm_mcp.index import get_instance
+
+        index = get_instance()
+        if index is not None:
+            index.upsert_page(doc_id, page, text, "ocr", backend)
+    except Exception:
+        logger.debug("L2 write failed for page OCR", exc_info=True)
 
 
 def get_cached_ocr_result(
@@ -261,6 +297,8 @@ def cache_ocr_result(
     """
     Cache an OCR result for a document.
 
+    Writes to both L1 (in-memory) and L2 (SQLite index).
+
     Args:
         doc_id: Document ID
         result: Extraction result dict with keys: typed_text, highlights,
@@ -276,6 +314,16 @@ def cache_ocr_result(
         keys_to_remove = list(_extraction_cache.keys())[:len(_extraction_cache) - _MAX_EXTRACTION_CACHE_SIZE]
         for key in keys_to_remove:
             del _extraction_cache[key]
+
+    # L2: write-through to SQLite index
+    try:
+        from rm_mcp.index import get_instance
+
+        index = get_instance()
+        if index is not None:
+            index.store_extraction_result(doc_id, result)
+    except Exception:
+        logger.debug("L2 write failed for extraction result", exc_info=True)
 
 
 # =============================================================================

@@ -360,6 +360,50 @@ async def _load_documents_background(shutdown_event: asyncio.Event):
                 try:
                     if _register_document(client, doc, items_by_id, root=root):
                         registered_count += 1
+
+                    # Index document metadata in SQLite (L2 cache)
+                    try:
+                        from rm_mcp.index import get_instance
+
+                        index = get_instance()
+                        if index is not None:
+                            doc_path = _get_root_path()
+                            if items_by_id:
+                                from rm_mcp.paths import get_item_path
+
+                                doc_path = get_item_path(doc, items_by_id)
+
+                            # Determine file type from name
+                            name_lower = doc.VissibleName.lower()
+                            if name_lower.endswith(".pdf"):
+                                file_type = "pdf"
+                            elif name_lower.endswith(".epub"):
+                                file_type = "epub"
+                            else:
+                                file_type = "notebook"
+
+                            doc_hash = getattr(doc, "Version", None) or getattr(
+                                doc, "ModifiedClient", None
+                            )
+                            # Check for stale content BEFORE upserting
+                            # (upsert overwrites the hash, making comparison impossible)
+                            if doc_hash and index.needs_reindex(
+                                doc.ID, str(doc_hash)
+                            ):
+                                logger.debug(
+                                    f"Document '{doc.VissibleName}' needs re-indexing"
+                                )
+                            index.upsert_document(
+                                doc_id=doc.ID,
+                                doc_hash=str(doc_hash) if doc_hash else None,
+                                name=doc.VissibleName,
+                                path=doc_path,
+                                file_type=file_type,
+                                modified_at=getattr(doc, "ModifiedClient", None),
+                            )
+                    except Exception:
+                        pass  # Index failure is non-fatal
+
                 except Exception as e:
                     logger.debug(f"Failed to register document '{doc.VissibleName}': {e}")
 
