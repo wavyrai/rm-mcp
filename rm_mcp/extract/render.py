@@ -5,6 +5,8 @@ Uses rmc for .rm -> SVG conversion, then cairosvg for SVG -> PNG.
 """
 
 import os
+import shutil
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -27,6 +29,23 @@ def get_background_color() -> str:
 # For backwards compatibility, expose as module constant (evaluated at import)
 # Use get_background_color() for runtime evaluation of env var
 REMARKABLE_BACKGROUND_COLOR = get_background_color()
+
+
+def _find_rmc() -> str:
+    """Find the rmc binary, checking the current venv's bin dir first.
+
+    When running under uvx, the venv's bin/ may not be on PATH,
+    so subprocess.run(["rmc", ...]) would fail with FileNotFoundError.
+    """
+    # Check next to the current Python executable (same venv bin dir)
+    venv_rmc = Path(sys.executable).parent / "rmc"
+    if venv_rmc.is_file():
+        return str(venv_rmc)
+    # Fall back to PATH lookup
+    found = shutil.which("rmc")
+    if found:
+        return found
+    raise FileNotFoundError("rmc binary not found")
 
 # Margin around content when using content-based bounding box (in pixels)
 CONTENT_MARGIN = 50
@@ -128,7 +147,7 @@ def render_rm_file_to_png(
 
         # Convert .rm to SVG using rmc
         result = subprocess.run(
-            ["rmc", "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
+            [_find_rmc(), "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
             capture_output=True,
             timeout=30,
         )
@@ -240,7 +259,7 @@ def render_rm_file_to_svg(
 
         # Convert .rm to SVG using rmc
         result = subprocess.run(
-            ["rmc", "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
+            [_find_rmc(), "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
             capture_output=True,
             timeout=30,
         )
