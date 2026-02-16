@@ -1,14 +1,14 @@
 """
 SVG/PNG rendering for reMarkable .rm files.
 
-Uses rmc for .rm -> SVG conversion, then cairosvg (or inkscape) for SVG -> PNG.
+Uses rmc for .rm -> SVG conversion, then cairosvg for SVG -> PNG.
 """
 
 import os
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 # reMarkable tablet screen dimensions (in pixels) - used as fallback
 REMARKABLE_WIDTH = 1404
@@ -191,17 +191,10 @@ def render_rm_file_to_png(
                 return f.read()
 
         except ImportError:
-            # Fall back to inkscape
-            result = subprocess.run(
-                ["inkscape", str(tmp_svg_path), "--export-filename", str(tmp_png_path)],
-                capture_output=True,
-                timeout=30,
+            raise RuntimeError(
+                "cairosvg is required for PNG rendering. "
+                "Install it with: pip install cairosvg"
             )
-            if result.returncode != 0:
-                return None
-
-            with open(tmp_png_path, "rb") as f:
-                return f.read()
 
     except subprocess.TimeoutExpired:
         return None

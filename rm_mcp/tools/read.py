@@ -67,10 +67,14 @@ async def remarkable_read(
 
         root = _helpers._get_root_path()
         # Resolve user-provided path to actual device path
-        actual_document = _helpers._resolve_root_path(document) if document.startswith("/") else document
+        actual_document = (
+            _helpers._resolve_root_path(document) if document.startswith("/") else document
+        )
 
         # Find the document
-        target_doc, doc_path = _helpers._find_document(actual_document, collection, items_by_id, root)
+        target_doc, doc_path = _helpers._find_document(
+            actual_document, collection, items_by_id, root
+        )
         if target_doc is None:
             return doc_path  # doc_path contains the error JSON
 
@@ -90,7 +94,9 @@ async def remarkable_read(
             is_notebook = file_type not in ("pdf", "epub")
 
             # Determine if we should use sampling OCR
-            use_sampling = is_notebook and include_ocr and ctx and _helpers.should_use_sampling_ocr(ctx)
+            use_sampling = (
+                is_notebook and include_ocr and ctx and _helpers.should_use_sampling_ocr(ctx)
+            )
 
             # For sampling OCR: use per-page caching and only OCR requested page
             if use_sampling:
@@ -143,6 +149,8 @@ async def remarkable_read(
                     content = _helpers.extract_text_from_document_zip(
                         tmp_path, include_ocr=include_ocr, doc_id=target_doc.ID
                     )
+                    if content.get("pages"):
+                        total_notebook_pages = content["pages"]
                     if content.get("handwritten_text"):
                         notebook_pages = content["handwritten_text"]
                         ocr_backend_used = content.get("ocr_backend")
@@ -468,11 +476,12 @@ async def remarkable_read(
             return json.dumps(result_data, indent=2)
 
         if total_chars == 0:
-            if page > 1:
+            real_pages = total_notebook_pages or 1
+            if page > real_pages:
                 return _helpers.make_error(
                     error_type="page_out_of_range",
-                    message=f"Page {page} does not exist. Document has 1 page(s).",
-                    suggestion="Use page=1 to start from the beginning.",
+                    message=f"Page {page} does not exist. Document has {real_pages} page(s).",
+                    suggestion=f"Use page=1 to {real_pages} to read different pages.",
                     compact=compact,
                 )
             # Return empty result for page 1
@@ -482,8 +491,8 @@ async def remarkable_read(
                 "file_type": file_type or "notebook",
                 "content_type": content_type,
                 "content": "",
-                "page": 1,
-                "total_pages": 1,
+                "page": page,
+                "total_pages": real_pages,
                 "total_chars": 0,
                 "more": False,
                 "modified": (

@@ -3815,5 +3815,94 @@ class TestCacheValidity:
         assert _is_cache_valid(entry) is False
 
 
+# =============================================================================
+# Test notebook page counting (empty notebooks should report real page count)
+# =============================================================================
+
+
+class TestNotebookPageCount:
+    """Test that notebooks with no text still report the correct total_pages."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_empty_notebook_reports_real_page_count(
+        self, mock_get_cached, mock_extract, mock_file_type
+    ):
+        """An empty 16-page notebook should report total_pages=16, not 1."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Prototyper Design"
+        doc.ID = "doc-proto"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-06-01T10:00:00Z"
+        doc.Type = "DocumentType"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip-data"
+
+        # Extraction returns no text but reports 16 pages
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": [],
+            "pages": 16,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read",
+            {"document": "Prototyper Design", "auto_ocr": False},
+        )
+        data = json.loads(result[0][0].text)
+
+        assert data["total_pages"] == 16
+        assert data["total_chars"] == 0
+        assert data["page"] == 1
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_empty_notebook_page_out_of_range_uses_real_count(
+        self, mock_get_cached, mock_extract, mock_file_type
+    ):
+        """Requesting page 20 of a 16-page empty notebook should say 16 pages."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Prototyper Design"
+        doc.ID = "doc-proto2"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-06-01T10:00:00Z"
+        doc.Type = "DocumentType"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip-data"
+
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": [],
+            "pages": 16,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read",
+            {"document": "Prototyper Design", "page": 20, "auto_ocr": False},
+        )
+        data = json.loads(result[0][0].text)
+
+        assert data["_error"]["type"] == "page_out_of_range"
+        assert "16 page(s)" in data["_error"]["message"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
