@@ -90,7 +90,7 @@ main() {
   [ -z "$CODE" ] && fail "No code entered. Setup cancelled."
 
   info "  Registering..."
-  TOKEN=$(uvx rm-mcp --register "$CODE" --quiet) || fail "Registration failed. Is the code correct?"
+  TOKEN=$(uvx --refresh rm-mcp --register "$CODE" --quiet) || fail "Registration failed. Is the code correct?"
   ok "Successfully registered!"
   printf "\n"
 
