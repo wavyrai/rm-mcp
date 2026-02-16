@@ -626,6 +626,52 @@ class TestSetupCommand:
         assert args.setup is True
 
 
+class TestRegisterQuiet:
+    """Test --register CODE --quiet flag."""
+
+    @patch("rm_mcp.api.register_and_get_token")
+    def test_register_quiet_outputs_raw_token(self, mock_register, capsys):
+        """Test that --register CODE --quiet outputs only the raw token JSON."""
+        mock_register.return_value = '{"devicetoken":"tok123","usertoken":""}'
+
+        from rm_mcp.cli import main
+
+        with patch("sys.argv", ["rm-mcp", "--register", "abc123", "--quiet"]):
+            main()
+
+        captured = capsys.readouterr()
+        # Should contain only the raw token, no styling
+        assert captured.out.strip() == '{"devicetoken":"tok123","usertoken":""}'
+        assert "✓" not in captured.out
+        assert "Step" not in captured.out
+        assert "Claude" not in captured.out
+
+    @patch("rm_mcp.api.register_and_get_token")
+    def test_register_without_quiet_has_styling(self, mock_register, capsys):
+        """Test that --register without --quiet still produces styled output."""
+        mock_register.return_value = '{"devicetoken":"tok123","usertoken":""}'
+
+        from rm_mcp.cli import main
+
+        with patch("sys.argv", ["rm-mcp", "--register", "abc123"]):
+            main()
+
+        captured = capsys.readouterr()
+        assert "Successfully registered!" in captured.out
+        assert "claude mcp add remarkable" in captured.out
+
+    def test_quiet_arg_parsing(self):
+        """Test that --quiet is recognized by argparse."""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--register", metavar="CODE")
+        parser.add_argument("--quiet", action="store_true")
+        args = parser.parse_args(["--register", "code", "--quiet"])
+        assert args.quiet is True
+        assert args.register == "code"
+
+
 # =============================================================================
 # Test Unauthenticated Mode
 # =============================================================================

@@ -131,6 +131,11 @@ Examples:
         metavar="CODE",
         help="Register with reMarkable using a one-time code and print the token",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="With --register: output only the raw token JSON (for scripting)",
+    )
 
     args = parser.parse_args()
 
@@ -141,6 +146,11 @@ Examples:
         from rm_mcp.api import register_and_get_token
 
         try:
+            if args.quiet:
+                token = register_and_get_token(args.register)
+                print(token)
+                return
+
             print(header(_VERSION))
             print()
             print("           Registering...")
