@@ -35,7 +35,7 @@ This opens your browser, prompts for the one-time code, and prints the ready-to-
 
 #### 1. Get a One-Time Code
 
-Go to [my.remarkable.com/device/browser/connect](https://my.remarkable.com/device/browser/connect) and generate a code.
+Go to [my.remarkable.com/device/browser/connect](https://my.remarkable.com/device/apps/connect) and generate a code.
 
 #### 2. Convert to Token
 

@@ -21,7 +21,7 @@ from importlib.metadata import version as pkg_version
 
 from rm_mcp._style import box, error, header, step, success
 
-REMARKABLE_CONNECT_URL = "https://my.remarkable.com/device/browser/connect"
+REMARKABLE_CONNECT_URL = "https://my.remarkable.com/device/apps/connect"
 
 try:
     _VERSION = pkg_version("rm-mcp")

@@ -351,7 +351,7 @@ def register_device(one_time_code: str) -> Dict[str, str]:
     Register a new device with reMarkable cloud.
 
     Args:
-        one_time_code: Code from https://my.remarkable.com/device/browser/connect
+        one_time_code: Code from https://my.remarkable.com/device/apps/connect
 
     Returns:
         Dict with devicetoken and usertoken keys
@@ -377,7 +377,7 @@ def register_device(one_time_code: str) -> Dict[str, str]:
         "  1. The code has expired (codes are single-use)\n"
         "  2. The code was already used\n"
         "  3. The code was typed incorrectly\n\n"
-        "Get a new code from: https://my.remarkable.com/device/browser/connect"
+        "Get a new code from: https://my.remarkable.com/device/apps/connect"
     )
 
 

@@ -9,7 +9,7 @@
 main() {
   set -e
 
-  CONNECT_URL="https://my.remarkable.com/device/browser/connect"
+  CONNECT_URL="https://my.remarkable.com/device/apps/connect"
 
   # --- Helpers ---
   bold=""  dim=""  green=""  red=""  reset=""

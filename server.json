@@ -19,7 +19,7 @@
       "environmentVariables": [
         {
           "name": "REMARKABLE_TOKEN",
-          "description": "Authentication token for reMarkable Cloud API. Get one by registering at https://my.remarkable.com/device/browser/connect",
+          "description": "Authentication token for reMarkable Cloud API. Get one by registering at https://my.remarkable.com/device/apps/connect",
           "isRequired": true,
           "format": "string",
           "isSecret": true

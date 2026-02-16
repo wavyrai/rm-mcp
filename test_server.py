@@ -574,7 +574,7 @@ class TestSetupCommand:
 
         _handle_setup()
 
-        mock_browser.assert_called_once_with("https://my.remarkable.com/device/browser/connect")
+        mock_browser.assert_called_once_with("https://my.remarkable.com/device/apps/connect")
         mock_register.assert_called_once_with("abc123")
 
         captured = capsys.readouterr()

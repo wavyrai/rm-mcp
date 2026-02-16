@@ -57,7 +57,7 @@ def register_and_get_token(one_time_code: str) -> str:
     """
     Register with reMarkable using a one-time code and return the token.
 
-    Get a code from: https://my.remarkable.com/device/browser/connect
+    Get a code from: https://my.remarkable.com/device/apps/connect
     """
     from rm_mcp.clients.cloud import register_device
 
