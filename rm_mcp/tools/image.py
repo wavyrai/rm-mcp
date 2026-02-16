@@ -5,8 +5,8 @@ from typing import Optional
 
 from mcp.server.fastmcp import Context
 from mcp.types import (
-    BlobResourceContents,
     EmbeddedResource,
+    ImageContent,
     TextContent,
     TextResourceContents,
 )
@@ -37,10 +37,9 @@ async def remarkable_image(
 
     ## Response Formats
 
-    By default, images are returned as embedded resources (EmbeddedResource) which
-    include the full image data inline:
-    - PNG: Returned as BlobResourceContents with base64-encoded data
-    - SVG: Returned as TextResourceContents with SVG markup
+    By default, images are returned inline:
+    - PNG: Returned as ImageContent with base64-encoded data
+    - SVG: Returned as EmbeddedResource with TextResourceContents containing SVG markup
 
     If your client doesn't support embedded resources in tool responses, set
     compatibility=True to receive a JSON response with just the resource URI.
@@ -209,18 +208,15 @@ async def remarkable_image(
                             compact=compact,
                         )
                     else:
-                        blob_resource = BlobResourceContents(
-                            uri=resource_uri,
-                            mimeType="image/png",
-                            blob=png_base64,
+                        image = ImageContent(
+                            type="image", data=png_base64, mimeType="image/png"
                         )
-                        embedded = EmbeddedResource(type="resource", resource=blob_resource)
                         info = TextContent(
                             type="text",
                             text=f"Page {page}/{total_pages} of '{target_doc.VissibleName}' "
                             f"as PNG (cached). Resource URI: {resource_uri}",
                         )
-                        return [info, embedded]
+                        return [info, image]
 
                 png_data = _helpers.render_page_from_document_zip(
                     tmp_path, page, background_color=background
@@ -295,13 +291,10 @@ async def remarkable_image(
                     }
                     return _helpers.make_response(response_data, hint, compact=compact)
                 else:
-                    # Return PNG as embedded BlobResourceContents with info hint
-                    blob_resource = BlobResourceContents(
-                        uri=resource_uri,
-                        mimeType="image/png",
-                        blob=png_base64,
+                    # Return PNG as ImageContent for direct visibility in clients
+                    image = ImageContent(
+                        type="image", data=png_base64, mimeType="image/png"
                     )
-                    embedded = EmbeddedResource(type="resource", resource=blob_resource)
 
                     info_text = f"Page {page}/{total_pages} of '{target_doc.VissibleName}' as PNG. "
                     info_text += f"Resource URI: {resource_uri}"
@@ -311,7 +304,7 @@ async def remarkable_image(
                         info_text += "\n\nOCR: No text detected in image."
 
                     info = TextContent(type="text", text=info_text)
-                    return [info, embedded]
+                    return [info, image]
 
     except Exception as e:
         return _helpers.make_error(
