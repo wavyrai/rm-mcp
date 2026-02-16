@@ -37,6 +37,17 @@ uvx rm-mcp --register YOUR_CODE
 
 #### 3. Install
 
+**Claude Code:**
+
+```bash
+claude mcp add remarkable \
+  -e REMARKABLE_TOKEN='<paste token from step 2>' \
+  -e REMARKABLE_OCR_BACKEND=sampling \
+  -- uvx rm-mcp
+```
+
+**VS Code / Copilot:**
+
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=remarkable&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22token%22%2C%22description%22%3A%22reMarkable%20API%20token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22rm-mcp%22%5D%2C%22env%22%3A%7B%22REMARKABLE_TOKEN%22%3A%22%24%7Binput%3Atoken%7D%22%7D%7D)
 [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=remarkable&inputs=%5B%7B%22type%22%3A%22promptString%22%2C%22id%22%3A%22token%22%2C%22description%22%3A%22reMarkable%20API%20token%22%2C%22password%22%3Atrue%7D%5D&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22rm-mcp%22%5D%2C%22env%22%3A%7B%22REMARKABLE_TOKEN%22%3A%22%24%7Binput%3Atoken%7D%22%7D%7D&quality=insiders)
 
@@ -58,6 +69,24 @@ Or configure manually in `.vscode/mcp.json`:
       "args": ["rm-mcp"],
       "env": {
         "REMARKABLE_TOKEN": "${input:remarkable-token}"
+      }
+    }
+  }
+}
+```
+
+**Claude Desktop:**
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "remarkable": {
+      "command": "uvx",
+      "args": ["rm-mcp"],
+      "env": {
+        "REMARKABLE_TOKEN": "<paste token from step 2>"
       }
     }
   }
@@ -89,7 +118,7 @@ AI assistants use the tools to read documents, search content, and more:
 | Tool | Description |
 |------|-------------|
 | `remarkable_read` | Read and extract text from documents (with pagination and search) |
-| `remarkable_browse` | Navigate folders or search by document name |
+| `remarkable_browse` | Navigate folders in your library |
 | `remarkable_search` | Search content across multiple documents |
 | `remarkable_recent` | Get recently modified documents |
 | `remarkable_status` | Check connection status |
@@ -101,8 +130,12 @@ All tools are **read-only** and return structured JSON with hints for next actio
 
 ### Smart Features
 
+- **Multi-page read** — Read all pages at once with `pages="all"`, or a range like `pages="1-3"`
+- **Grep auto-redirect** — `grep` automatically finds and jumps to the matching page
 - **Auto-redirect** — Browsing a document path returns its content automatically
-- **Auto-OCR** — Notebooks with no typed text automatically enable OCR
+- **Auto-OCR** — Notebooks with no typed text automatically enable OCR (opt out with `auto_ocr=False`)
+- **Full-text search** — Reading a document indexes it for fast future searches
+- **Compact mode** — Use `compact_output=True` to reduce token usage in responses
 - **Batch search** — Search across multiple documents in one call
 - **Vision support** — Get page images for visual context (diagrams, mockups, sketches)
 - **Sampling OCR** — Use client's AI for OCR on images (no API key needed)
@@ -113,7 +146,13 @@ All tools are **read-only** and return structured JSON with hints for next actio
 # Read a document
 remarkable_read("Meeting Notes")
 
-# Search for keywords
+# Read all pages at once
+remarkable_read("Meeting Notes", pages="all")
+
+# Read a range of pages
+remarkable_read("Research Paper", pages="1-3")
+
+# Search for keywords (auto-redirects to matching page)
 remarkable_read("Project Plan", grep="deadline")
 
 # Enable OCR for handwritten notes
@@ -125,23 +164,14 @@ remarkable_browse("/Work/Projects")
 # Search across documents
 remarkable_search("meeting", grep="action items")
 
-# Get recent documents
-remarkable_recent(limit=10)
+# Get recent documents with previews
+remarkable_recent(limit=5, include_preview=True)
 
-# Get a page image (for visual content like UI mockups or diagrams)
+# Get a page image
 remarkable_image("UI Mockup", page=1)
 
-# Get SVG for editing in design tools
-remarkable_image("Wireframe", output_format="svg")
-
-# Get image with OCR text extraction (uses sampling if configured)
+# Get image with OCR text extraction
 remarkable_image("Handwritten Notes", include_ocr=True)
-
-# Transparent background for compositing
-remarkable_image("Logo Sketch", background="#00000000")
-
-# Compatibility mode: return resource URI instead of embedded resource
-remarkable_image("Diagram", compatibility=True)
 ```
 
 ---

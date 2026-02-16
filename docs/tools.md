@@ -44,9 +44,12 @@ With this configuration:
 |-----------|------|---------|-------------|
 | `document` | string | *required* | Document name or full path |
 | `content_type` | string | `"text"` | What content to extract |
-| `page` | int | `1` | Page number for pagination |
+| `page` | int | `1` | Page number (single-page mode) |
+| `pages` | string | `None` | Multi-page spec: `"all"`, `"1-3"`, `"2,4,5"` |
 | `grep` | string | `None` | Search for keywords in content |
 | `include_ocr` | bool | `False` | Enable OCR for handwritten content |
+| `auto_ocr` | bool | `True` | Auto-retry with OCR on empty notebooks (set `False` to skip) |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
 
 ### Content Types
 
@@ -59,10 +62,16 @@ With this configuration:
 # Read first page of a document
 remarkable_read("Meeting Notes")
 
-# Read a specific page
-remarkable_read("Research Paper.pdf", page=3)
+# Read all pages at once
+remarkable_read("Meeting Notes", pages="all")
 
-# Search for keywords
+# Read a range of pages
+remarkable_read("Research Paper", pages="1-3")
+
+# Read specific pages
+remarkable_read("Notes", pages="2,4,5")
+
+# Search for keywords (auto-redirects to matching page)
 remarkable_read("Project Plan", grep="deadline")
 
 # Get only annotations and highlights
@@ -70,6 +79,9 @@ remarkable_read("Book.pdf", content_type="annotations")
 
 # Enable OCR for handwritten notes
 remarkable_read("Journal", include_ocr=True)
+
+# Skip auto-OCR on empty notebooks
+remarkable_read("Blank Notebook", auto_ocr=False)
 
 # Read by full path
 remarkable_read("/Work/Projects/Q4 Planning")
@@ -79,7 +91,7 @@ remarkable_read("/Work/Projects/Q4 Planning")
 
 ```json
 {
-  "document": "Meeting Notes",
+  "name": "Meeting Notes",
   "path": "/Work/Meeting Notes",
   "file_type": "notebook",
   "content_type": "text",
@@ -95,16 +107,18 @@ remarkable_read("/Work/Projects/Q4 Planning")
 
 ### Smart Features
 
-- **Auto-OCR**: If a notebook has no typed text and `include_ocr=False`, OCR is automatically enabled and you're notified via `_ocr_auto_enabled: true`
-- **Fuzzy matching**: If the exact document isn't found, similar names are suggested
-- **Path resolution**: Works with document names or full paths
+- **Multi-page read**: Use `pages="all"` to get all pages in one call, or `pages="1-3"` for a range. Pages are separated by `--- Page N ---` markers. Output is capped at ~50K characters.
+- **Grep auto-redirect**: When `grep` finds no match on the current page, it automatically redirects to the first matching page instead of returning an error. The response includes `grep_redirected_from` showing the original page.
+- **Auto-OCR**: If a notebook has no typed text, OCR is automatically enabled (opt out with `auto_ocr=False`). Notified via `_ocr_auto_enabled: true`.
+- **Fuzzy matching**: If the exact document isn't found, similar names are suggested.
+- **Path resolution**: Works with document names or full paths.
 
 ### Pagination
 
-- **PDF/EPUB**: Pages are ~8000 character chunks of extracted text
-- **Notebooks**: Pages correspond to actual notebook pages (especially useful with OCR)
+- **PDF/EPUB**: Pages are ~8000 character chunks of extracted text. Use `pages="all"` to get the full text.
+- **Notebooks**: Pages correspond to actual notebook pages. Use `pages="all"` or a range to read multiple.
 
-When `more: true`, use the `page` parameter to continue reading.
+When `more: true`, use the `page` parameter to continue reading, or `pages="all"` to get everything.
 
 ---
 
@@ -117,7 +131,7 @@ When `more: true`, use the `page` parameter to continue reading.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `path` | string | `"/"` | Folder path to browse |
-| `query` | string | `None` | Search documents by name |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
 
 ### Examples
 
@@ -127,13 +141,9 @@ remarkable_browse("/")
 
 # Browse a specific folder
 remarkable_browse("/Work/Projects")
-
-# Search for documents by name
-remarkable_browse(query="meeting")
-
-# Combine path and search
-remarkable_browse("/Work", query="report")
 ```
+
+To search by document name, use `remarkable_search()` instead.
 
 ### Response Format
 
@@ -148,7 +158,7 @@ remarkable_browse("/Work", query="report")
     {
       "name": "Weekly Report",
       "path": "/Work/Weekly Report",
-      "type": "pdf",
+      "file_type": "pdf",
       "modified": "2025-11-28T10:30:00Z"
     }
   ],
@@ -159,7 +169,7 @@ remarkable_browse("/Work", query="report")
 ### Smart Features
 
 - **Auto-redirect**: If `path` points to a document instead of a folder, automatically returns the document content (like calling `remarkable_read`)
-- **Case-insensitive**: Paths and searches are case-insensitive
+- **Case-insensitive**: Paths are case-insensitive
 
 ---
 
@@ -171,10 +181,11 @@ remarkable_browse("/Work", query="report")
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `query` | string | *required* | Search term for document names |
-| `grep` | string | `None` | Pattern to search within content |
-| `limit` | int | `5` | Maximum documents to search (max: 5) |
+| `query` | string | *required* | Search term for document names and indexed content |
+| `grep` | string | `None` | Regex pattern to search within content |
+| `limit` | int | `5` | Maximum documents to return (max: 5) |
 | `include_ocr` | bool | `False` | Enable OCR for handwritten content |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
 
 ### Examples
 
@@ -189,6 +200,12 @@ remarkable_search("meeting", grep="action items")
 remarkable_search("journal", grep="project idea", include_ocr=True)
 ```
 
+### How It Works
+
+- **Without `grep`**: Returns metadata only (name, path, file_type, modified). No cloud downloads — fast.
+- **With `grep`**: Searches document content for the pattern. Uses the local index when available, falls back to cloud download on cache miss.
+- **Full-text search**: Reading a document via `remarkable_read` indexes its content for future search queries.
+
 ### Response Format
 
 ```json
@@ -200,6 +217,7 @@ remarkable_search("journal", grep="project idea", include_ocr=True)
     {
       "name": "Team Meeting Nov",
       "path": "/Work/Team Meeting Nov",
+      "file_type": "notebook",
       "modified": "2025-11-28T10:30:00Z",
       "content": "...context around matches...",
       "total_pages": 2,
@@ -207,9 +225,17 @@ remarkable_search("journal", grep="project idea", include_ocr=True)
       "truncated": true
     }
   ],
+  "index_coverage": {
+    "indexed": 25,
+    "total": 42
+  },
   "_hint": "Found 3 document(s) with 12 grep match(es). To read more: remarkable_read('/Work/Team Meeting Nov')."
 }
 ```
+
+### Index Coverage
+
+The `index_coverage` field shows how many documents are searchable by content. Reading documents via `remarkable_read` indexes them. When coverage is low, some content matches may be missed.
 
 ### Limits
 
@@ -227,8 +253,9 @@ remarkable_search("journal", grep="project idea", include_ocr=True)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `limit` | int | `10` | Maximum documents to return |
+| `limit` | int | `10` | Maximum documents to return (max: 50 without preview, 10 with) |
 | `include_preview` | bool | `False` | Include text preview for each document |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
 
 ### Examples
 
@@ -249,6 +276,7 @@ remarkable_recent(limit=5, include_preview=True)
     {
       "name": "Meeting Notes",
       "path": "/Work/Meeting Notes",
+      "file_type": "notebook",
       "modified": "2025-11-28T10:30:00Z",
       "preview": "First 200 characters of content..."
     }
@@ -260,8 +288,9 @@ remarkable_recent(limit=5, include_preview=True)
 ### Notes
 
 - With `include_preview=True`, limit is capped at 10 (performance)
-- Notebooks skip preview (require OCR), showing `preview_skipped` instead
-- PDFs and EPUBs have fast text extraction for previews
+- Previews are served from the local index when available (no cloud download)
+- Notebooks without indexed content show `preview_skipped` instead
+- PDFs and EPUBs fall back to cloud download for previews if not indexed
 
 ---
 
@@ -271,7 +300,9 @@ remarkable_recent(limit=5, include_preview=True)
 
 ### Parameters
 
-None.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
 
 ### Examples
 
@@ -289,7 +320,7 @@ remarkable_status()
   "status": "connected",
   "document_count": 142,
   "root_path": "/Work",
-  "ocr_backend": "google",
+  "ocr_backend": "sampling",
   "_hint": "Connection healthy. Filtered to root: /Work. Use remarkable_browse('/') to explore your library."
 }
 ```
@@ -321,6 +352,7 @@ remarkable_status()
 | `output_format` | string | `"png"` | Output format: `"png"` or `"svg"` |
 | `include_ocr` | bool | `False` | Enable OCR on the image (uses sampling if configured) |
 | `compatibility` | bool | `False` | Return resource URI instead of embedded resource |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
 
 ### Background Colors
 
