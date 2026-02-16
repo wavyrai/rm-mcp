@@ -49,19 +49,38 @@ def remarkable_status(compact_output: bool = False) -> str:
         if root != "/":
             result["root_path"] = root
 
+        # Add configuration details
+        from rm_mcp.cache import _CACHE_TTL_SECONDS
+
+        result["config"] = {
+            "ocr_backend": _helpers.get_ocr_backend(),
+            "root_path": root,
+            "background_color": _helpers.get_background_color(),
+            "cache_ttl_seconds": _CACHE_TTL_SECONDS,
+            "compact_mode": _helpers.is_compact(),
+        }
+
         # Add index stats if available
         try:
             from rm_mcp.index import get_instance
 
             index = get_instance()
             if index is not None:
-                result.update(index.get_stats())
+                stats = index.get_stats()
+                result.update(stats)
+                # Add coverage percentage
+                indexed = stats.get("index_documents", 0)
+                if doc_count > 0:
+                    pct = int(indexed / doc_count * 100)
+                    result["index_coverage"] = f"{indexed}/{doc_count} documents indexed ({pct}%)"
         except Exception:
             pass
 
         hint_parts = [f"Connected successfully via {transport}. Found {doc_count} documents."]
         if root != "/":
             hint_parts.append(f"Filtered to root: {root}")
+        if "index_coverage" in result:
+            hint_parts.append(f"Index coverage: {result['index_coverage']}.")
         hint_parts.append(
             "Use remarkable_browse() to see your files, "
             "or remarkable_recent() for recent documents."
@@ -80,11 +99,7 @@ def remarkable_status(compact_output: bool = False) -> str:
         }
 
         hint = (
-            "To authenticate: "
-            "1) Go to https://my.remarkable.com/device/browser/connect "
-            "2) Get a one-time code "
-            "3) Run: uvx rm-mcp --register YOUR_CODE "
-            "4) Add REMARKABLE_TOKEN to your MCP config."
+            "To authenticate: run 'uvx rm-mcp --setup' and follow the instructions."
         )
 
         return _helpers.make_response(result, hint, compact=compact)

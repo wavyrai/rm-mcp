@@ -46,6 +46,10 @@ def get_cached_collection() -> Tuple[Any, List]:
     from rm_mcp.api import get_rmapi
 
     client = get_rmapi()
+    if client is None:
+        raise RuntimeError(
+            "Not authenticated. Run: uvx rm-mcp --setup"
+        )
     now = time.time()
 
     # If we have a valid cache within TTL, return immediately
@@ -149,7 +153,7 @@ _page_ocr_cache: Dict[tuple, Dict[str, Any]] = {}
 def _is_cache_valid(cached: Dict[str, Any]) -> bool:
     """Check if a cached entry is still valid based on TTL."""
     if "timestamp" not in cached:
-        return True  # Old cache entries without timestamp are valid
+        return False  # Unknown age = stale
     return (time.time() - cached["timestamp"]) < EXTRACTION_CACHE_TTL_SECONDS
 
 
@@ -245,8 +249,8 @@ def cache_page_ocr(
         "timestamp": time.time(),
     }
     if len(_page_ocr_cache) > _MAX_PAGE_OCR_CACHE_SIZE:
-        keys_to_remove = list(_page_ocr_cache.keys())[:len(_page_ocr_cache) - _MAX_PAGE_OCR_CACHE_SIZE]
-        for key in keys_to_remove:
+        excess = len(_page_ocr_cache) - _MAX_PAGE_OCR_CACHE_SIZE
+        for key in list(_page_ocr_cache.keys())[:excess]:
             del _page_ocr_cache[key]
 
     # L2: write-through to SQLite index
@@ -311,8 +315,8 @@ def cache_ocr_result(
         "timestamp": time.time(),
     }
     if len(_extraction_cache) > _MAX_EXTRACTION_CACHE_SIZE:
-        keys_to_remove = list(_extraction_cache.keys())[:len(_extraction_cache) - _MAX_EXTRACTION_CACHE_SIZE]
-        for key in keys_to_remove:
+        excess = len(_extraction_cache) - _MAX_EXTRACTION_CACHE_SIZE
+        for key in list(_extraction_cache.keys())[:excess]:
             del _extraction_cache[key]
 
     # L2: write-through to SQLite index

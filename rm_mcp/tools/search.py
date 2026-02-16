@@ -1,7 +1,7 @@
 """remarkable_search tool — search across multiple documents."""
 
-import logging
 import json
+import logging
 from typing import Optional
 
 from rm_mcp.server import mcp
@@ -49,6 +49,7 @@ async def remarkable_search(
     try:
         # Enforce limits
         limit = min(max(1, limit), 5)
+        warnings = []
 
         # Use cached collection directly — no JSON round-trip through browse/read
         client, collection = _helpers.get_cached_collection()
@@ -76,8 +77,9 @@ async def remarkable_search(
                             "match_type": "content",
                         }
                     )
-        except Exception:
+        except Exception as e:
             logger.debug("FTS search failed", exc_info=True)
+            warnings.append(f"Full-text search unavailable: {e}")
 
         # ---- Phase 2: Name search (existing behavior) ----
         query_lower = query.lower()
@@ -135,7 +137,9 @@ async def remarkable_search(
                 # With grep: try L2 index first, fall back to cloud download
                 l2_content = None
                 if index is not None:
-                    l2_content = index.get_content_snippet(doc.ID, max_chars=_helpers.MAX_OUTPUT_CHARS)
+                    l2_content = index.get_content_snippet(
+                        doc.ID, max_chars=_helpers.MAX_OUTPUT_CHARS
+                    )
 
                 if l2_content:
                     # Grep against cached content locally
@@ -156,8 +160,9 @@ async def remarkable_search(
                             doc_result["content"] = "\n\n---\n\n".join(matches)[:2000]
                             if len(doc_result["content"]) == 2000:
                                 doc_result["truncated"] = True
-                    except _re.error:
+                    except _re.error as e:
                         doc_result["grep_matches"] = 0
+                        doc_result["grep_error"] = f"Invalid regex '{grep}': {e}"
                 else:
                     # L2 miss — fall back to cloud download via remarkable_read
                     try:
@@ -206,6 +211,8 @@ async def remarkable_search(
             "count": len(search_results),
             "documents": search_results,
         }
+        if warnings:
+            result["_warnings"] = warnings
         if index_coverage is not None:
             result["index_coverage"] = index_coverage
 
@@ -231,8 +238,14 @@ async def remarkable_search(
         if first_doc and "path" in first_doc:
             hint += f" To read more: remarkable_read('{first_doc['path']}')."
 
-        if index_coverage and not docs_with_content and index_coverage["indexed"] < index_coverage["total"]:
-            hint += f" Content search covers {index_coverage['indexed']}/{index_coverage['total']} documents."
+        if (
+            index_coverage
+            and not docs_with_content
+            and index_coverage["indexed"] < index_coverage["total"]
+        ):
+            indexed = index_coverage["indexed"]
+            total = index_coverage["total"]
+            hint += f" Content search covers {indexed}/{total} documents."
 
         return _helpers.make_response(result, hint, compact=compact)
 
@@ -240,6 +253,6 @@ async def remarkable_search(
         return _helpers.make_error(
             error_type="search_failed",
             message=str(e),
-            suggestion="Check remarkable_status() to verify your connection.",
+            suggestion=_helpers.suggest_for_error(e),
             compact=compact,
         )

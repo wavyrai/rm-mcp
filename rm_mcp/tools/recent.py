@@ -123,6 +123,6 @@ def remarkable_recent(limit: int = 10, include_preview: bool = False, compact_ou
         return _helpers.make_error(
             error_type="recent_failed",
             message=str(e),
-            suggestion="Check remarkable_status() to verify your connection.",
+            suggestion=_helpers.suggest_for_error(e),
             compact=compact,
         )

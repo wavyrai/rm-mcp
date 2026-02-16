@@ -10,26 +10,16 @@ import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from mcp.types import ToolAnnotations
 
 # --- Re-exports (commonly patched in tests) ---
 # Tool modules access these via ``_helpers.X()`` so tests can patch once
 # at ``rm_mcp.tools._helpers.X``.
-
 from rm_mcp.api import (  # noqa: F401
     REMARKABLE_TOKEN,
     get_file_type,
-)
-from rm_mcp.paths import (  # noqa: F401
-    _apply_root_filter,
-    _find_document,
-    _get_root_path,
-    _is_within_root,
-    get_item_path,
-    get_items_by_id,
-    get_items_by_parent,
 )
 from rm_mcp.cache import get_cached_collection  # noqa: F401
 from rm_mcp.extract import (  # noqa: F401
@@ -44,13 +34,21 @@ from rm_mcp.extract import (  # noqa: F401
     render_page_from_document_zip,
     render_page_from_document_zip_svg,
 )
-from rm_mcp.responses import make_error, make_response  # noqa: F401
 from rm_mcp.ocr.sampling import (  # noqa: F401
     get_ocr_backend,
     ocr_via_sampling,
     should_use_sampling_ocr,
 )
-
+from rm_mcp.paths import (  # noqa: F401
+    _apply_root_filter,
+    _find_document,
+    _get_root_path,
+    _is_within_root,
+    get_item_path,
+    get_items_by_id,
+    get_items_by_parent,
+)
+from rm_mcp.responses import make_error, make_response  # noqa: F401
 
 # --- Helper functions ---
 
@@ -61,6 +59,23 @@ def is_compact(compact_output: bool = False) -> bool:
 
 
 MAX_OUTPUT_CHARS = int(os.environ.get("REMARKABLE_MAX_OUTPUT_CHARS", "50000"))
+
+
+def suggest_for_error(e: Exception) -> str:
+    """Generate a context-aware suggestion based on error content."""
+    msg = str(e).lower()
+    if "not authenticated" in msg or "no device token" in msg:
+        return "Run: uvx rm-mcp --setup to authenticate."
+    if "re-authenticate" in msg or ("token" in msg and ("expired" in msg or "401" in msg)):
+        return "Your token may have expired. Run: uvx rm-mcp --setup to re-authenticate."
+    if "network error" in msg or "connection" in msg or "timeout" in msg:
+        return "Check your internet connection and try again."
+    if "empty response" in msg:
+        return (
+            "The reMarkable API returned an empty response. "
+            "Your token may have expired. Run: uvx rm-mcp --setup"
+        )
+    return "Check remarkable_status() for diagnostics."
 
 
 def parse_pages(pages_str: str, total_pages: int) -> List[int]:
@@ -111,6 +126,7 @@ def _temp_document(data: bytes, suffix: str = ".zip"):
 # --- Caches ---
 
 _file_type_cache: Dict[str, str] = {}
+_MAX_FILE_TYPE_CACHE = 200
 
 _rendered_image_cache: Dict[str, str] = {}  # key: f"{doc_id}:{page}" -> base64 PNG
 
@@ -121,6 +137,8 @@ def _get_file_type_cached(client, doc) -> str:
     if doc_id in _file_type_cache:
         return _file_type_cache[doc_id]
     file_type = get_file_type(client, doc)
+    if len(_file_type_cache) >= _MAX_FILE_TYPE_CACHE:
+        _file_type_cache.clear()
     _file_type_cache[doc_id] = file_type
     return file_type
 

@@ -556,6 +556,6 @@ async def remarkable_read(
         return _helpers.make_error(
             error_type="read_failed",
             message=str(e),
-            suggestion="Check remarkable_status() to verify your connection.",
+            suggestion=_helpers.suggest_for_error(e),
             compact=compact,
         )

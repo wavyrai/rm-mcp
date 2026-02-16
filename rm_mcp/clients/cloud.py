@@ -81,8 +81,7 @@ class RemarkableClient:
 
         raise RuntimeError(
             f"Failed to renew user token (HTTP {response.status_code}).\n"
-            "Your device may need to be re-registered.\n"
-            "Get a new code from: https://my.remarkable.com/device/browser/connect"
+            "Re-authenticate by running: uvx rm-mcp --setup"
         )
 
     def _request(self, url: str, method: str = "GET") -> requests.Response:
@@ -153,7 +152,7 @@ class RemarkableClient:
         if not response.text or not response.text.strip():
             raise RuntimeError(
                 "Empty response from reMarkable API. Your token may have expired.\n"
-                "Try re-registering: uvx rm-mcp --register <code>"
+                "Re-authenticate by running: uvx rm-mcp --setup"
             )
 
         try:
@@ -259,7 +258,7 @@ class RemarkableClient:
             if not response.text or not response.text.strip():
                 raise RuntimeError(
                     "Empty response from reMarkable API. Your token may have expired.\n"
-                    "Try re-registering: uvx rm-mcp --register <code>"
+                    "Re-authenticate by running: uvx rm-mcp --setup"
                 )
 
             try:
@@ -431,7 +430,7 @@ def load_client_from_file(token_file: Path = Path.home() / ".rmapi") -> Remarkab
     if not token_file.exists():
         raise RuntimeError(
             f"Token file not found: {token_file}\n"
-            "Register first with: uvx rm-mcp --register <code>"
+            "Run: uvx rm-mcp --setup"
         )
 
     token_json = token_file.read_text()

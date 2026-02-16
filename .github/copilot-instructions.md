@@ -70,8 +70,8 @@ uv run pytest test_server.py -v -m "not slow"
 # Run the MCP server directly
 uv run python server.py
 
-# Register a new device (one-time setup)
-uv run python server.py --register <one-time-code>
+# Interactive setup (one-time)
+uv run python server.py --setup
 
 # Run as installed package
 uv run rm-mcp
@@ -108,19 +108,38 @@ uv run ruff format .
 ```
 rm-mcp/
 ├── server.py              # Entry point (backwards compatible)
-├── rm_mcp/        # Main package
+├── rm_mcp/                # Main package
 │   ├── __init__.py
 │   ├── server.py          # FastMCP server initialization
+│   ├── cli.py             # CLI (--setup, --register, server mode)
 │   ├── api.py             # reMarkable Cloud API helpers
-│   ├── extract.py         # Text extraction utilities
+│   ├── cache.py           # Collection + extraction caching (L1/L2)
+│   ├── index.py           # SQLite FTS5 document index
+│   ├── models.py          # Protocol types
+│   ├── paths.py           # Path resolution and root filtering
 │   ├── responses.py       # Response formatting
-│   ├── tools.py           # MCP tools with annotations
-│   ├── resources.py       # MCP resources
-│   └── prompts.py         # MCP prompts
+│   ├── resources.py       # MCP resources + background loader
+│   ├── prompts.py         # MCP prompts
+│   ├── clients/
+│   │   └── cloud.py       # reMarkable Cloud API client
+│   ├── extract/           # Text/image extraction
+│   │   ├── notebook.py    # .rm file parsing
+│   │   ├── pdf.py         # PDF text extraction
+│   │   ├── epub.py        # EPUB text extraction
+│   │   └── render.py      # Page rendering (PNG/SVG)
+│   ├── ocr/
+│   │   └── sampling.py    # MCP sampling-based OCR
+│   └── tools/             # MCP tool implementations
+│       ├── _helpers.py    # Shared helpers and re-exports
+│       ├── browse.py
+│       ├── read.py
+│       ├── search.py
+│       ├── recent.py
+│       ├── image.py
+│       └── status.py
 ├── test_server.py         # Test suite
 ├── pyproject.toml         # Project config and dependencies
 ├── README.md              # User documentation (KEEP UPDATED)
-├── RESEARCH_NOTES.md      # Design decisions (do not commit)
 └── .github/
     ├── copilot-instructions.md  # This file
     └── workflows/
@@ -175,12 +194,18 @@ def remarkable_example(param: str) -> str:
 - `mcp` - Model Context Protocol SDK
 - `requests` - HTTP client for reMarkable Cloud API
 - `rmscene` - Native .rm file parser for text extraction (v3+ format)
-- `pytesseract` - OCR for handwritten content
-- `rmc` - reMarkable file conversion utilities
+- `rmc` - reMarkable file conversion utilities (for page rendering)
+- `cairosvg` - SVG to PNG conversion (for page rendering)
 
 ## Environment Variables
 
-- `REMARKABLE_TOKEN` - Authentication token for reMarkable Cloud
+- `REMARKABLE_TOKEN` - Authentication token (from `uvx rm-mcp --setup`)
+- `REMARKABLE_ROOT_PATH` - Limit access to a specific folder (default: `/`)
+- `REMARKABLE_OCR_BACKEND` - OCR backend, `sampling` (default)
+- `REMARKABLE_BACKGROUND_COLOR` - Background for rendered images (default: `#FBFBFB`)
+- `REMARKABLE_CACHE_TTL` - Collection cache TTL in seconds (default: `60`)
+- `REMARKABLE_COMPACT` - Set to `1` to omit hints globally
+- `REMARKABLE_INDEX_PATH` - SQLite index location (default: `~/.cache/rm-mcp/index.db`)
 
 ## Testing Patterns
 
@@ -193,10 +218,10 @@ async def test_something():
     assert "expected_key" in data
 
 # Mocking the API client
-@patch('rm_mcp.tools.get_rmapi')
-async def test_with_mock(mock_get_rmapi):
+@patch('rm_mcp.tools._helpers.get_cached_collection')
+async def test_with_mock(mock_get_cached):
     mock_client = Mock()
-    mock_get_rmapi.return_value = mock_client
+    mock_get_cached.return_value = (mock_client, [])
     # ... test code
 ```
 
@@ -204,7 +229,7 @@ async def test_with_mock(mock_get_rmapi):
 
 ### Adding a New Tool
 
-1. Add the tool function in `rm_mcp/tools.py` with proper docstring and annotations
+1. Add the tool function in `rm_mcp/tools/` with proper docstring and annotations
 2. Add tests in `test_server.py`
 3. Update README.md tools table
 4. Update README.md examples if relevant

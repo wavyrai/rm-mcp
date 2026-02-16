@@ -12,26 +12,21 @@ from rm_mcp.models import RemarkableClientProtocol
 
 # Configuration - check env var first, then fall back to file
 REMARKABLE_TOKEN = os.environ.get("REMARKABLE_TOKEN")
-REMARKABLE_CONFIG_DIR = Path.home() / ".remarkable"
-REMARKABLE_TOKEN_FILE = REMARKABLE_CONFIG_DIR / "token"
-CACHE_DIR = REMARKABLE_CONFIG_DIR / "cache"
 
 logger = logging.getLogger(__name__)
 
 # --- Singleton client ---
 _client_singleton: Optional[RemarkableClientProtocol] = None
 
-# Track whether we've already written the token file for this process
-_token_file_written = False
 
-
-def get_rmapi() -> RemarkableClientProtocol:
+def get_rmapi() -> Optional[RemarkableClientProtocol]:
     """
     Get or initialize the reMarkable API client.
 
     Uses a singleton pattern so the client is only created once per process.
+    Returns None if no token is configured (unauthenticated mode).
     """
-    global _client_singleton, _token_file_written
+    global _client_singleton
 
     # Return cached client if available
     if _client_singleton is not None:
@@ -42,26 +37,13 @@ def get_rmapi() -> RemarkableClientProtocol:
 
     # If token is provided via environment, use it
     if REMARKABLE_TOKEN:
-        # Save to ~/.rmapi for compatibility (only once per process)
-        if not _token_file_written:
-            rmapi_file = Path.home() / ".rmapi"
-            fd = os.open(str(rmapi_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            try:
-                os.write(fd, REMARKABLE_TOKEN.encode())
-            finally:
-                os.close(fd)
-            _token_file_written = True
         _client_singleton = load_client_from_token(REMARKABLE_TOKEN)
         return _client_singleton
 
     # Load from file
     rmapi_file = Path.home() / ".rmapi"
     if not rmapi_file.exists():
-        raise RuntimeError(
-            "No reMarkable token found. Register first:\n"
-            "  uvx rm-mcp --register <code>\n\n"
-            "Get a code from: https://my.remarkable.com/device/browser/connect"
-        )
+        return None
 
     try:
         token_json = rmapi_file.read_text()
@@ -69,12 +51,6 @@ def get_rmapi() -> RemarkableClientProtocol:
         return _client_singleton
     except Exception as e:
         raise RuntimeError(f"Failed to initialize reMarkable client: {e}")
-
-
-def ensure_config_dir():
-    """Ensure configuration directory exists."""
-    REMARKABLE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def register_and_get_token(one_time_code: str) -> str:

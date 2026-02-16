@@ -123,8 +123,16 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
             logger.info("REMARKABLE_INDEX_REBUILD set — clearing index")
             idx.clear()
 
-    logger.info("Cloud mode: starting background loader...")
-    task = start_background_loader()
+    # Check if authenticated before starting background loader
+    from rm_mcp.api import get_rmapi
+
+    client = get_rmapi()
+    if client is not None:
+        logger.info("Cloud mode: starting background loader...")
+        task = start_background_loader()
+    else:
+        logger.warning("Background loader skipped (not authenticated)")
+        task = None
 
     try:
         yield

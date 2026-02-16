@@ -21,9 +21,17 @@ Whether you're researching, writing, or developing ideas, rm-mcp lets you levera
 
 ## Quick Install
 
-### ☁️ Cloud Mode
-
 Uses the reMarkable Cloud API. Requires a reMarkable Connect subscription.
+
+### One-command setup (recommended)
+
+```bash
+uvx rm-mcp --setup
+```
+
+This opens your browser, prompts for the one-time code, and prints the ready-to-paste config for Claude Code and Claude Desktop.
+
+### Manual setup
 
 #### 1. Get a One-Time Code
 
@@ -35,7 +43,7 @@ Go to [my.remarkable.com/device/browser/connect](https://my.remarkable.com/devic
 uvx rm-mcp --register YOUR_CODE
 ```
 
-#### 3. Install
+#### 3. Add to your MCP client
 
 **Claude Code:**
 
@@ -46,9 +54,7 @@ claude mcp add remarkable \
   -- uvx rm-mcp
 ```
 
-**Claude Desktop:**
-
-Add to your `claude_desktop_config.json`:
+**Claude Desktop** — add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -241,6 +247,24 @@ Supported formats:
 - `#RRGGBBAA` — RGBA hex (e.g., `#00000000` for transparent)
 
 Default is `#FBFBFB` (reMarkable paper color). This affects both the `remarkable_image` tool and image resources.
+
+### All Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REMARKABLE_TOKEN` | *(required)* | Auth token from `uvx rm-mcp --setup` |
+| `REMARKABLE_ROOT_PATH` | `/` | Limit access to a specific folder |
+| `REMARKABLE_OCR_BACKEND` | `sampling` | OCR backend (`sampling`) |
+| `REMARKABLE_BACKGROUND_COLOR` | `#FBFBFB` | Background color for rendered images (`#RRGGBB` or `#RRGGBBAA`) |
+| `REMARKABLE_CACHE_TTL` | `60` | Collection cache TTL in seconds |
+| `REMARKABLE_COMPACT` | *(off)* | Set to `1` or `true` to omit hints from responses globally |
+| `REMARKABLE_MAX_OUTPUT_CHARS` | `50000` | Maximum characters in tool responses |
+| `REMARKABLE_PAGE_SIZE` | `8000` | PDF/EPUB page size in characters |
+| `REMARKABLE_PARALLEL_WORKERS` | `5` | Parallel workers for metadata fetching |
+| `REMARKABLE_INDEX_PATH` | `~/.cache/rm-mcp/index.db` | SQLite full-text search index location |
+| `REMARKABLE_INDEX_REBUILD` | *(off)* | Set to `1` to force index rebuild on startup |
+
+Most users only need `REMARKABLE_TOKEN`. The rest are for advanced tuning.
 
 ---
 

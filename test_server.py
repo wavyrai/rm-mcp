@@ -16,21 +16,21 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from rm_mcp.api import register_and_get_token
-from rm_mcp.paths import get_item_path, get_items_by_id
-
-# Helper for patching get_cached_collection to return (mock_client, collection)
-# Patch in the tools module where it's imported and used
-_PATCH_CACHED = "rm_mcp.tools._helpers.get_cached_collection"
 from rm_mcp.extract import (
     extract_text_from_document_zip,
     extract_text_from_rm_file,
     find_similar_documents,
 )
+from rm_mcp.paths import get_item_path, get_items_by_id
 from rm_mcp.responses import (
     make_error,
     make_response,
 )
 from rm_mcp.server import mcp
+
+# Helper for patching get_cached_collection to return (mock_client, collection)
+# Patch in the tools module where it's imported and used
+_PATCH_CACHED = "rm_mcp.tools._helpers.get_cached_collection"
 
 # =============================================================================
 # Test Fixtures
@@ -282,7 +282,7 @@ class TestRemarkableStatus:
     @patch(_PATCH_CACHED)
     async def test_status_not_authenticated(self, mock_get_cached):
         """Test status when not authenticated."""
-        mock_get_cached.side_effect = RuntimeError("Failed to authenticate")
+        mock_get_cached.side_effect = RuntimeError("Not authenticated. Run: uvx rm-mcp --setup")
 
         result = await mcp.call_tool("remarkable_status", {})
         data = json.loads(result[0][0].text)
@@ -290,8 +290,8 @@ class TestRemarkableStatus:
         assert data["authenticated"] is False
         assert "error" in data
         assert "_hint" in data
-        # Hint should include registration instructions
-        assert "register" in data["_hint"].lower()
+        # Hint should reference --setup
+        assert "--setup" in data["_hint"]
 
 
 # =============================================================================
@@ -510,10 +510,11 @@ class TestRemarkableImage:
 class TestRegistration:
     """Test registration functionality."""
 
+    @patch("os.close")
+    @patch("os.write")
+    @patch("os.open", return_value=99)
     @patch("requests.post")
-    @patch("pathlib.Path.chmod")
-    @patch("pathlib.Path.write_text")
-    def test_register_and_get_token(self, mock_write_text, mock_chmod, mock_post):
+    def test_register_and_get_token(self, mock_post, mock_os_open, mock_os_write, mock_os_close):
         """Test registration process."""
         # Mock successful API response
         mock_response = Mock()
@@ -535,6 +536,12 @@ class TestRegistration:
         call_args = mock_post.call_args
         assert "webapp-prod.cloud.remarkable.engineering" in call_args[0][0]
 
+        # Verify token was written to ~/.rmapi
+        mock_os_open.assert_called_once()
+        written_path = mock_os_open.call_args[0][0]
+        assert ".rmapi" in written_path
+        mock_os_write.assert_called_once()
+
     @patch("requests.post")
     def test_register_invalid_code(self, mock_post):
         """Test registration with invalid/expired code."""
@@ -546,6 +553,123 @@ class TestRegistration:
 
         with pytest.raises(RuntimeError, match="Registration failed"):
             register_and_get_token("invalid_code")
+
+
+# =============================================================================
+# Test --setup Command
+# =============================================================================
+
+
+class TestSetupCommand:
+    """Test the --setup CLI command."""
+
+    @patch("rm_mcp.api.register_and_get_token")
+    @patch("builtins.input", return_value="abc123")
+    @patch("rm_mcp.cli.webbrowser.open")
+    def test_setup_success(self, mock_browser, mock_input, mock_register, capsys):
+        """Test successful --setup flow."""
+        mock_register.return_value = '{"devicetoken":"tok","usertoken":""}'
+
+        from rm_mcp.cli import _handle_setup
+
+        _handle_setup()
+
+        mock_browser.assert_called_once_with("https://my.remarkable.com/device/browser/connect")
+        mock_register.assert_called_once_with("abc123")
+
+        captured = capsys.readouterr()
+        assert "✓" in captured.out
+        assert "Successfully registered!" in captured.out
+        assert "claude mcp add remarkable" in captured.out
+        assert "claude_desktop_config.json" in captured.out
+        assert "Claude Code" in captured.out
+        assert "Claude Desktop" in captured.out
+
+    @patch("builtins.input", side_effect=KeyboardInterrupt)
+    @patch("rm_mcp.cli.webbrowser.open")
+    def test_setup_cancelled_keyboard_interrupt(self, mock_browser, mock_input):
+        """Test that --setup handles KeyboardInterrupt gracefully."""
+        from rm_mcp.cli import _handle_setup
+
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_setup()
+        assert exc_info.value.code == 0
+
+    @patch("builtins.input", side_effect=EOFError)
+    @patch("rm_mcp.cli.webbrowser.open")
+    def test_setup_cancelled_eof(self, mock_browser, mock_input):
+        """Test that --setup handles EOFError gracefully."""
+        from rm_mcp.cli import _handle_setup
+
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_setup()
+        assert exc_info.value.code == 0
+
+    @patch("builtins.input", return_value="")
+    @patch("rm_mcp.cli.webbrowser.open")
+    def test_setup_empty_code(self, mock_browser, mock_input):
+        """Test that --setup rejects empty code."""
+        from rm_mcp.cli import _handle_setup
+
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_setup()
+        assert exc_info.value.code == 1
+
+    def test_setup_arg_parsing(self):
+        """Test that --setup is recognized by argparse."""
+        import argparse
+
+        # Test that --setup is a valid argument
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--setup", action="store_true")
+        args = parser.parse_args(["--setup"])
+        assert args.setup is True
+
+
+# =============================================================================
+# Test Unauthenticated Mode
+# =============================================================================
+
+
+class TestUnauthenticatedMode:
+    """Test that server works gracefully without authentication."""
+
+    @patch("rm_mcp.api.get_rmapi", return_value=None)
+    @patch(_PATCH_CACHED, side_effect=RuntimeError("Not authenticated. Run: uvx rm-mcp --setup"))
+    @pytest.mark.asyncio
+    async def test_tools_return_setup_instructions(self, mock_cached, mock_rmapi):
+        """Test that tools return setup instructions when not authenticated."""
+        result = await mcp.call_tool("remarkable_status", {})
+        data = json.loads(result[0][0].text)
+
+        assert data["authenticated"] is False
+        assert "--setup" in data["_hint"]
+
+    def test_get_rmapi_returns_none_when_no_token(self):
+        """Test that get_rmapi returns None when no token is configured."""
+        import rm_mcp.api as api_mod
+
+        # Save and restore singleton
+        old_singleton = api_mod._client_singleton
+        old_token = api_mod.REMARKABLE_TOKEN
+        try:
+            api_mod._client_singleton = None
+            api_mod.REMARKABLE_TOKEN = None
+
+            with patch("pathlib.Path.exists", return_value=False):
+                result = api_mod.get_rmapi()
+                assert result is None
+        finally:
+            api_mod._client_singleton = old_singleton
+            api_mod.REMARKABLE_TOKEN = old_token
+
+    def test_cache_raises_when_no_client(self):
+        """Test that get_cached_collection raises RuntimeError when client is None."""
+        from rm_mcp.cache import get_cached_collection
+
+        with patch("rm_mcp.api.get_rmapi", return_value=None):
+            with pytest.raises(RuntimeError, match="Not authenticated"):
+                get_cached_collection()
 
 
 # =============================================================================
@@ -1345,7 +1469,8 @@ class TestRemarkableImageExtended:
             )
             data = json.loads(result[0].text)
 
-            assert data["image_base64"] == fake_base64
+            assert "data_uri" in data
+            assert fake_base64 in data["data_uri"]
             assert data["mime_type"] == "image/png"
             assert data["page"] == 1
         finally:
@@ -1410,7 +1535,7 @@ class TestCollectionCache:
         """Test that get_cached_collection returns cache when within TTL."""
         import rm_mcp.api as api_mod
         import rm_mcp.cache as cache_mod
-        from rm_mcp.cache import _CACHE_TTL_SECONDS, get_cached_collection
+        from rm_mcp.cache import get_cached_collection
 
         mock_client = Mock()
         mock_get_rmapi.return_value = mock_client
@@ -2297,7 +2422,10 @@ class TestDocumentIndex:
     def test_fts5_search_basic(self):
         """Test basic FTS5 search."""
         idx = self._make_index()
-        idx.upsert_document(doc_id="doc-1", doc_hash="h1", name="Notes", path="/Notes", file_type="notebook")
+        idx.upsert_document(
+            doc_id="doc-1", doc_hash="h1", name="Notes",
+            path="/Notes", file_type="notebook",
+        )
         idx.upsert_page("doc-1", 0, "The quantum physics experiment yielded results", "typed_text")
 
         results = idx.search("quantum")
@@ -2486,7 +2614,11 @@ class TestSearchWithFTS:
                 path="/Old Journal",
                 file_type="notebook",
             )
-            idx.upsert_page("doc-indexed", 0, "The quarterly budget review showed growth", "typed_text")
+            idx.upsert_page(
+                "doc-indexed", 0,
+                "The quarterly budget review showed growth",
+                "typed_text",
+            )
 
             # Set up collection with a different document (name match)
             mock_client = Mock()
@@ -2540,7 +2672,11 @@ class TestSearchWithFTS:
                 path="/Random Name",
                 file_type="notebook",
             )
-            idx.upsert_page("doc-1", 0, "Photosynthesis is the process of converting sunlight", "typed_text")
+            idx.upsert_page(
+                "doc-1", 0,
+                "Photosynthesis is the process of converting sunlight",
+                "typed_text",
+            )
 
             mock_client = Mock()
             mock_get_cached.return_value = (mock_client, [])
@@ -3240,6 +3376,397 @@ class TestAutoOcrOptOut:
         assert data.get("total_chars") == 0
         # Should NOT have _ocr_auto_enabled
         assert "_ocr_auto_enabled" not in data
+
+
+# =============================================================================
+# Test suggest_for_error
+# =============================================================================
+
+
+class TestSuggestForError:
+    """Test context-aware error suggestions."""
+
+    def test_authentication_error(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("Not authenticated. Run: uvx rm-mcp --setup"))
+        assert "--setup" in result
+        assert "authenticate" in result.lower()
+
+    def test_token_expired_error(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("Failed to renew user token (HTTP 401)"))
+        assert "--setup" in result
+        assert "expired" in result.lower()
+
+    def test_re_authenticate_error(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("Re-authenticate by running: uvx rm-mcp --setup"))
+        assert "--setup" in result
+
+    def test_network_error(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("Network error during request"))
+        assert "internet connection" in result.lower()
+
+    def test_timeout_error(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("Request timeout"))
+        assert "internet connection" in result.lower()
+
+    def test_empty_response_error(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("Empty response from reMarkable API"))
+        assert "--setup" in result
+
+    def test_generic_error_fallback(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("Something unexpected happened"))
+        assert "remarkable_status()" in result
+
+    def test_no_device_token(self):
+        from rm_mcp.tools._helpers import suggest_for_error
+
+        result = suggest_for_error(RuntimeError("No device token available"))
+        assert "--setup" in result
+
+
+# =============================================================================
+# Test Status Config
+# =============================================================================
+
+
+class TestStatusConfig:
+    """Test that status tool includes configuration details."""
+
+    @pytest.mark.asyncio
+    @patch(_PATCH_CACHED)
+    async def test_status_includes_config(self, mock_get_cached):
+        """Test that authenticated status includes config section."""
+        mock_client = Mock()
+        mock_get_cached.return_value = (mock_client, [])
+
+        result = await mcp.call_tool("remarkable_status", {})
+        data = json.loads(result[0][0].text)
+
+        assert data["authenticated"] is True
+        assert "config" in data
+        config = data["config"]
+        assert "ocr_backend" in config
+        assert "root_path" in config
+        assert "background_color" in config
+        assert "cache_ttl_seconds" in config
+        assert "compact_mode" in config
+
+    @pytest.mark.asyncio
+    @patch(_PATCH_CACHED)
+    async def test_status_config_values(self, mock_get_cached):
+        """Test that config values are sensible defaults."""
+        mock_client = Mock()
+        mock_get_cached.return_value = (mock_client, [])
+
+        result = await mcp.call_tool("remarkable_status", {})
+        data = json.loads(result[0][0].text)
+
+        config = data["config"]
+        assert config["ocr_backend"] == "sampling"
+        assert config["root_path"] == "/"
+        assert config["background_color"] == "#FBFBFB"
+        assert isinstance(config["cache_ttl_seconds"], int)
+        assert isinstance(config["compact_mode"], bool)
+
+
+# =============================================================================
+# Test OCR Unavailable Message
+# =============================================================================
+
+
+class TestOCRUnavailableMessage:
+    """Test differentiated OCR failure messages in image tool."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers.should_use_sampling_ocr", return_value=False)
+    @patch("rm_mcp.tools._helpers.render_page_from_document_zip")
+    @patch("rm_mcp.tools._helpers.get_document_page_count", return_value=3)
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_ocr_unavailable_message(
+        self,
+        mock_get_cached,
+        mock_extract,
+        mock_file_type,
+        mock_page_count,
+        mock_render,
+        mock_sampling,
+    ):
+        """Test that OCR unavailable shows clear message when client doesn't support sampling."""
+        mock_client = Mock()
+        doc = Mock()
+        doc.VissibleName = "Test Notebook"
+        doc.ID = "doc-ocr"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "notebook"
+        mock_client.download.return_value = b"fake-zip"
+        mock_render.return_value = b"\x89PNG fake image data"
+
+        result = await mcp.call_tool(
+            "remarkable_image",
+            {"document": "Test Notebook", "include_ocr": True, "compatibility": True},
+        )
+        data = json.loads(result[0].text)
+
+        assert "ocr_message" in data
+        assert "unavailable" in data["ocr_message"].lower()
+        assert "sampling" in data["ocr_message"].lower()
+        assert data["ocr_text"] is None
+
+
+# =============================================================================
+# Test content_type="annotations"
+# =============================================================================
+
+
+class TestAnnotationsMode:
+    """Test remarkable_read with content_type='annotations'."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_read_annotations_mode(
+        self, mock_get_cached, mock_extract, mock_file_type
+    ):
+        """Test reading annotations returns highlights and handwritten sections."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Annotated Doc"
+        doc.ID = "doc-annot"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-06-01T10:00:00Z"
+        doc.Type = "DocumentType"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        # Use pdf so it goes through the annotation assembly path
+        # (notebooks with handwritten_text enter the notebook pagination path)
+        mock_file_type.return_value = "pdf"
+        mock_client.download.return_value = b"fake-zip-data"
+
+        mock_extract.return_value = {
+            "typed_text": ["Some typed annotation text."],
+            "highlights": ["Highlighted passage one.", "Highlighted passage two."],
+            "handwritten_text": ["Handwritten note content."],
+            "pages": 1,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read",
+            {"document": "Annotated Doc", "content_type": "annotations"},
+        )
+        data = json.loads(result[0][0].text)
+
+        assert "content" in data
+        assert data["content_type"] == "annotations"
+        assert "Highlighted passage one" in data["content"]
+        assert "Handwritten" in data["content"]
+        assert "Some typed annotation text" in data["content"]
+        # annotations mode should NOT have the "=== Annotations ===" separator
+        assert "=== Annotations ===" not in data["content"]
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers._get_file_type_cached")
+    @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
+    @patch(_PATCH_CACHED)
+    async def test_read_annotations_empty(
+        self, mock_get_cached, mock_extract, mock_file_type
+    ):
+        """Test reading annotations when there are none returns gracefully."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "Empty Annot Doc"
+        doc.ID = "doc-empty-annot"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-06-01T10:00:00Z"
+        doc.Type = "DocumentType"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_file_type.return_value = "pdf"
+        mock_client.download.return_value = b"fake-zip-data"
+
+        mock_extract.return_value = {
+            "typed_text": [],
+            "highlights": [],
+            "handwritten_text": [],
+            "pages": 1,
+        }
+
+        result = await mcp.call_tool(
+            "remarkable_read",
+            {"document": "Empty Annot Doc", "content_type": "annotations"},
+        )
+        data = json.loads(result[0][0].text)
+
+        assert data["content"] == ""
+        assert data["content_type"] == "annotations"
+        assert data["total_chars"] == 0
+
+
+# =============================================================================
+# Test output_format="svg"
+# =============================================================================
+
+
+class TestImageSVG:
+    """Test remarkable_image with SVG output format."""
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers.render_page_from_document_zip_svg")
+    @patch("rm_mcp.tools._helpers.get_document_page_count", return_value=3)
+    @patch(_PATCH_CACHED)
+    async def test_image_svg_compatibility(
+        self, mock_get_cached, mock_page_count, mock_render_svg
+    ):
+        """Test SVG compatibility mode returns svg key and correct mime type."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "SVG Test Doc"
+        doc.ID = "doc-svg"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_client.download.return_value = b"fake-zip"
+        mock_render_svg.return_value = "<svg><circle cx='50' cy='50' r='40'/></svg>"
+
+        result = await mcp.call_tool(
+            "remarkable_image",
+            {"document": "SVG Test Doc", "output_format": "svg", "compatibility": True},
+        )
+        data = json.loads(result[0].text)
+
+        assert "svg" in data
+        assert data["mime_type"] == "image/svg+xml"
+        assert "image_base64" not in data
+        assert data["page"] == 1
+        assert data["total_pages"] == 3
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers.render_page_from_document_zip_svg")
+    @patch("rm_mcp.tools._helpers.get_document_page_count", return_value=2)
+    @patch(_PATCH_CACHED)
+    async def test_image_svg_embedded(
+        self, mock_get_cached, mock_page_count, mock_render_svg
+    ):
+        """Test SVG embedded mode returns TextContent + EmbeddedResource."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "SVG Embedded Doc"
+        doc.ID = "doc-svg-emb"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_client.download.return_value = b"fake-zip"
+        mock_render_svg.return_value = "<svg><rect width='100' height='100'/></svg>"
+
+        result = await mcp.call_tool(
+            "remarkable_image",
+            {"document": "SVG Embedded Doc", "output_format": "svg", "compatibility": False},
+        )
+
+        # Embedded mode returns a list with TextContent and EmbeddedResource
+        assert isinstance(result, list)
+        assert len(result) == 2
+        # First element is TextContent with info
+        assert hasattr(result[0], "text")
+        assert "SVG" in result[0].text
+        # Second element is EmbeddedResource
+        assert hasattr(result[1], "resource")
+        assert result[1].resource.mimeType == "image/svg+xml"
+
+    @pytest.mark.asyncio
+    @patch("rm_mcp.tools._helpers.render_page_from_document_zip_svg")
+    @patch("rm_mcp.tools._helpers.get_document_page_count", return_value=1)
+    @patch(_PATCH_CACHED)
+    async def test_image_svg_render_failed(
+        self, mock_get_cached, mock_page_count, mock_render_svg
+    ):
+        """Test SVG render failure returns render_failed error."""
+        mock_client = Mock()
+
+        doc = Mock()
+        doc.VissibleName = "SVG Fail Doc"
+        doc.ID = "doc-svg-fail"
+        doc.Parent = ""
+        doc.is_folder = False
+        doc.is_cloud_archived = False
+        doc.ModifiedClient = "2024-01-01T00:00:00Z"
+
+        mock_get_cached.return_value = (mock_client, [doc])
+        mock_client.download.return_value = b"fake-zip"
+        mock_render_svg.return_value = None
+
+        result = await mcp.call_tool(
+            "remarkable_image",
+            {"document": "SVG Fail Doc", "output_format": "svg"},
+        )
+        data = json.loads(result[0].text)
+
+        assert "_error" in data
+        assert data["_error"]["type"] == "render_failed"
+
+
+# =============================================================================
+# Test _is_cache_valid
+# =============================================================================
+
+
+class TestCacheValidity:
+    """Test _is_cache_valid function from cache module."""
+
+    def test_cache_valid_with_fresh_timestamp(self):
+        """Fresh timestamp should be valid."""
+        from rm_mcp.cache import _is_cache_valid
+
+        entry = {"timestamp": time.time(), "data": "some value"}
+        assert _is_cache_valid(entry) is True
+
+    def test_cache_valid_with_expired_timestamp(self):
+        """Old timestamp should be invalid."""
+        from rm_mcp.cache import EXTRACTION_CACHE_TTL_SECONDS, _is_cache_valid
+
+        entry = {"timestamp": time.time() - EXTRACTION_CACHE_TTL_SECONDS - 1, "data": "old"}
+        assert _is_cache_valid(entry) is False
+
+    def test_cache_invalid_without_timestamp(self):
+        """Entry without timestamp should be invalid (defensive fix)."""
+        from rm_mcp.cache import _is_cache_valid
+
+        entry = {"data": "no timestamp"}
+        assert _is_cache_valid(entry) is False
 
 
 if __name__ == "__main__":

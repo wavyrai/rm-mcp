@@ -86,10 +86,15 @@ async def remarkable_image(
 
         root = _helpers._get_root_path()
         # Resolve user-provided path to actual device path
-        actual_document = _helpers._resolve_root_path(document) if document.startswith("/") else document
+        if document.startswith("/"):
+            actual_document = _helpers._resolve_root_path(document)
+        else:
+            actual_document = document
 
         # Find the document
-        target_doc, doc_path = _helpers._find_document(actual_document, collection, items_by_id, root)
+        target_doc, doc_path = _helpers._find_document(
+            actual_document, collection, items_by_id, root
+        )
         if target_doc is None:
             return doc_path  # doc_path contains the error JSON
 
@@ -195,7 +200,6 @@ async def remarkable_image(
                         return _helpers.make_response(
                             {
                                 "data_uri": data_uri,
-                                "image_base64": png_base64,
                                 "mime_type": "image/png",
                                 "page": page,
                                 "total_pages": total_pages,
@@ -235,6 +239,7 @@ async def remarkable_image(
                 # Handle OCR if requested - extract text from the image
                 ocr_text = None
                 ocr_backend_used = None
+                ocr_message = None
                 if include_ocr:
                     # Try sampling-based OCR if configured and available
                     # This sends the image to the client's LLM to extract text
@@ -242,6 +247,10 @@ async def remarkable_image(
                         ocr_text = await _helpers.ocr_via_sampling(ctx, png_data)
                         if ocr_text:
                             ocr_backend_used = "sampling"
+                        else:
+                            ocr_message = "No text detected in image"
+                    else:
+                        ocr_message = "OCR unavailable (client does not support sampling)"
 
                 resource_uri = f"remarkableimg:///{uri_path}.page-{page}.png"
                 png_base64 = base64.b64encode(png_data).decode("utf-8")
@@ -256,8 +265,8 @@ async def remarkable_image(
                 if include_ocr:
                     ocr_info["ocr_text"] = ocr_text
                     ocr_info["ocr_backend"] = ocr_backend_used
-                    if ocr_text is None:
-                        ocr_info["ocr_message"] = "No text detected in image"
+                    if ocr_message:
+                        ocr_info["ocr_message"] = ocr_message
 
                 if compatibility:
                     # Return base64 PNG in JSON for clients without embedded resource support
@@ -278,7 +287,6 @@ async def remarkable_image(
 
                     response_data = {
                         "data_uri": data_uri,
-                        "image_base64": png_base64,
                         "mime_type": "image/png",
                         "page": page,
                         "total_pages": total_pages,
@@ -309,6 +317,6 @@ async def remarkable_image(
         return _helpers.make_error(
             error_type="image_failed",
             message=str(e),
-            suggestion="Check remarkable_status() to verify your connection.",
+            suggestion=_helpers.suggest_for_error(e),
             compact=compact,
         )

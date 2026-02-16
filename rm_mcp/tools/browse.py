@@ -171,6 +171,6 @@ async def remarkable_browse(path: str = "/", compact_output: bool = False) -> st
         return _helpers.make_error(
             error_type="browse_failed",
             message=str(e),
-            suggestion="Check remarkable_status() to verify your connection.",
+            suggestion=_helpers.suggest_for_error(e),
             compact=compact,
         )
