@@ -86,7 +86,7 @@ main() {
   fi
 
   printf "  Enter the one-time code: "
-  read -r CODE
+  read -r CODE < /dev/tty
   [ -z "$CODE" ] && fail "No code entered. Setup cancelled."
 
   info "  Registering..."
