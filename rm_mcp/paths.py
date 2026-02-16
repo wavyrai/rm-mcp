@@ -132,6 +132,9 @@ def _find_document(document: str, collection, items_by_id: Dict[str, Any], root:
     document_lower = document.lower().strip("/")
 
     for doc in documents:
+        # Skip trashed documents
+        if getattr(doc, "Parent", "") == "trash":
+            continue
         doc_path = get_item_path(doc, items_by_id)
         # Filter by root path
         if not _is_within_root(doc_path, root):
@@ -148,7 +151,10 @@ def _find_document(document: str, collection, items_by_id: Dict[str, Any], root:
     if not target_doc:
         # Find similar documents for suggestion (only within root)
         filtered_docs = [
-            doc for doc in documents if _is_within_root(get_item_path(doc, items_by_id), root)
+            doc
+            for doc in documents
+            if getattr(doc, "Parent", "") != "trash"
+            and _is_within_root(get_item_path(doc, items_by_id), root)
         ]
         # Use the original user-provided document name for suggestions
         similar = find_similar_documents(document, filtered_docs)
