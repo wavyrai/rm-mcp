@@ -348,8 +348,16 @@ def render_page_from_document_zip_svg(
         if page < 1 or page > len(rm_files):
             return None
 
-        # Render the requested page
+        # Render the requested page (None = blank page)
         target_rm_file = rm_files[page - 1]
+        if target_rm_file is None:
+            bg = background_color or "#FBFBFB"
+            return (
+                f'<svg xmlns="http://www.w3.org/2000/svg" '
+                f'width="{REMARKABLE_WIDTH}" height="{REMARKABLE_HEIGHT}">'
+                f'<rect width="100%" height="100%" fill="{bg}"/>'
+                f"</svg>"
+            )
         return render_rm_file_to_svg(target_rm_file, background_color=background_color)
 
 
@@ -382,8 +390,24 @@ def render_page_from_document_zip(
         if page < 1 or page > len(rm_files):
             return None
 
-        # Render the requested page
+        # Render the requested page (None = blank page)
         target_rm_file = rm_files[page - 1]
+        if target_rm_file is None:
+            # Render blank page as PNG via cairosvg
+            import cairosvg
+
+            bg = background_color or "#FBFBFB"
+            blank_svg = (
+                f'<svg xmlns="http://www.w3.org/2000/svg" '
+                f'width="{REMARKABLE_WIDTH}" height="{REMARKABLE_HEIGHT}">'
+                f'<rect width="100%" height="100%" fill="{bg}"/>'
+                f"</svg>"
+            )
+            return cairosvg.svg2png(
+                bytestring=blank_svg.encode("utf-8"),
+                output_width=REMARKABLE_WIDTH,
+                output_height=REMARKABLE_HEIGHT,
+            )
         return render_rm_file_to_png(target_rm_file, background_color=background_color)
 
 

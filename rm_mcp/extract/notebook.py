@@ -66,17 +66,18 @@ def extract_text_from_rm_file(rm_file_path: Path) -> List[str]:
         return []
 
 
-def _get_ordered_rm_files(tmpdir_path: Path) -> List[Path]:
+def _get_ordered_rm_files(tmpdir_path: Path) -> List[Optional[Path]]:
     """Extract and order .rm files from an extracted document directory.
 
-    Reads the .content file to determine page order and returns .rm files
-    sorted accordingly. Falls back to filesystem order if no page order found.
+    Reads the .content file to determine page order and returns entries for
+    ALL pages (including blank ones without .rm files as None).
+    Falls back to filesystem order if no page order found.
 
     Args:
         tmpdir_path: Path to the extracted document directory
 
     Returns:
-        List of .rm file paths in correct page order
+        List of .rm file paths (or None for blank pages) in correct page order
     """
     # Get page order from .content file
     page_order = []
@@ -103,15 +104,16 @@ def _get_ordered_rm_files(tmpdir_path: Path) -> List[Path]:
             page_id = rm_file.stem
             rm_by_id[page_id] = rm_file
 
-        ordered_rm_files = []
+        ordered: List[Optional[Path]] = []
         for page_id in page_order:
-            if page_id in rm_by_id:
-                ordered_rm_files.append(rm_by_id[page_id])
+            # None for blank pages (no .rm file)
+            ordered.append(rm_by_id.get(page_id))
         # Add any remaining files not in page order
+        seen = set(page_order)
         for rm_file in rm_files:
-            if rm_file not in ordered_rm_files:
-                ordered_rm_files.append(rm_file)
-        return ordered_rm_files
+            if rm_file.stem not in seen:
+                ordered.append(rm_file)
+        return ordered
 
     return rm_files
 
@@ -119,6 +121,9 @@ def _get_ordered_rm_files(tmpdir_path: Path) -> List[Path]:
 def get_document_page_count(zip_path: Path) -> int:
     """
     Get the number of pages in a reMarkable document zip.
+
+    Uses the .content metadata (cPages.pages or pages array) which lists all
+    pages including blank ones. Falls back to counting .rm files if no metadata.
 
     Args:
         zip_path: Path to the document zip file
@@ -132,6 +137,19 @@ def get_document_page_count(zip_path: Path) -> int:
         with zipfile.ZipFile(zip_path, "r") as zf:
             _safe_extractall(zf, tmpdir_path)
 
+        # Read page count from .content metadata (includes blank pages)
+        for content_file in tmpdir_path.glob("*.content"):
+            try:
+                data = json.loads(content_file.read_text())
+                if "cPages" in data and "pages" in data["cPages"]:
+                    return len(data["cPages"]["pages"])
+                if "pages" in data and isinstance(data["pages"], list):
+                    return len(data["pages"])
+            except Exception:
+                pass
+            break
+
+        # Fallback: count .rm files (misses blank pages)
         return len(list(tmpdir_path.glob("**/*.rm")))
 
 
@@ -180,13 +198,14 @@ def extract_text_from_document_zip(
             _safe_extractall(zf, tmpdir_path)
 
         rm_files = _get_ordered_rm_files(tmpdir_path)
-        result["page_ids"] = [f.stem for f in rm_files]
+        result["page_ids"] = [f.stem if f else None for f in rm_files]
         result["pages"] = len(rm_files)
 
-        # Extract typed text from .rm files using rmscene
+        # Extract typed text from .rm files using rmscene (skip blank pages)
         for rm_file in rm_files:
-            text_lines = extract_text_from_rm_file(rm_file)
-            result["typed_text"].extend(text_lines)
+            if rm_file is not None:
+                text_lines = extract_text_from_rm_file(rm_file)
+                result["typed_text"].extend(text_lines)
 
         # Extract text from .txt and .md files
         for txt_file in tmpdir_path.glob("**/*.txt"):
