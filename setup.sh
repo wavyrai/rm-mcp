@@ -110,7 +110,7 @@ main() {
   claude mcp add remarkable \
     -e REMARKABLE_TOKEN="$TOKEN" \
     -e REMARKABLE_OCR_BACKEND=sampling \
-    -- uvx rm-mcp
+    -- uvx --refresh rm-mcp
   ok "MCP server added to Claude Code!"
   printf "\n"
 
@@ -138,7 +138,7 @@ config.setdefault('mcpServers', {})
 # Set the remarkable server entry
 config['mcpServers']['remarkable'] = {
     'command': 'uvx',
-    'args': ['rm-mcp'],
+    'args': ['--refresh', 'rm-mcp'],
     'env': {
         'REMARKABLE_TOKEN': token,
         'REMARKABLE_OCR_BACKEND': 'sampling'

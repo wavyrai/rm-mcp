@@ -51,7 +51,7 @@ uvx rm-mcp --register YOUR_CODE
 claude mcp add remarkable \
   -e REMARKABLE_TOKEN='<paste token from step 2>' \
   -e REMARKABLE_OCR_BACKEND=sampling \
-  -- uvx rm-mcp
+  -- uvx --refresh rm-mcp
 ```
 
 **Claude Desktop** — add to `claude_desktop_config.json`:
@@ -61,7 +61,7 @@ claude mcp add remarkable \
   "mcpServers": {
     "remarkable": {
       "command": "uvx",
-      "args": ["rm-mcp"],
+      "args": ["--refresh", "rm-mcp"],
       "env": {
         "REMARKABLE_TOKEN": "<paste token from step 2>"
       }
