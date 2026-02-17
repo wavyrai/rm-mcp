@@ -110,7 +110,7 @@ main() {
   claude mcp add remarkable \
     -e REMARKABLE_TOKEN="$TOKEN" \
     -e REMARKABLE_OCR_BACKEND=sampling \
-    -- uvx --refresh rm-mcp
+    -- uvx --refresh rm-mcp || true
   ok "MCP server added to Claude Code!"
   printf "\n"
 
