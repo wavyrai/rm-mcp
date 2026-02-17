@@ -184,12 +184,17 @@ def render_rm_file_to_png(
             tmp_png_path = Path(tmp_png.name)
 
         # Convert .rm to SVG using rmc
+        rmc_bin = _find_rmc()
         result = subprocess.run(
-            [_find_rmc(), "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
+            [rmc_bin, "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
             capture_output=True,
             timeout=30,
         )
         if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            logger.warning(
+                "rmc failed (exit %d) for %s: %s", result.returncode, rm_file_path, stderr
+            )
             return None
 
         # Get content bounds from SVG
@@ -297,12 +302,17 @@ def render_rm_file_to_svg(
             tmp_svg_path = Path(tmp_svg.name)
 
         # Convert .rm to SVG using rmc
+        rmc_bin = _find_rmc()
         result = subprocess.run(
-            [_find_rmc(), "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
+            [rmc_bin, "-t", "svg", "-o", str(tmp_svg_path), str(rm_file_path)],
             capture_output=True,
             timeout=30,
         )
         if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            logger.warning(
+                "rmc failed (exit %d) for %s: %s", result.returncode, rm_file_path, stderr
+            )
             return None
 
         # Read SVG content

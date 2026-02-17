@@ -223,9 +223,15 @@ async def remarkable_image(
                 if png_data is None:
                     return _helpers.make_error(
                         error_type="render_failed",
-                        message="Failed to render page to image.",
+                        message=(
+                            f"Failed to render page {page} of "
+                            f"'{target_doc.VissibleName}' to image. "
+                            f"Check server logs for details."
+                        ),
                         suggestion=(
-                            "Make sure 'rmc' and 'cairosvg' are installed. Try: uv add rmc cairosvg"
+                            "Make sure 'rmc' and 'cairosvg' are installed "
+                            "and the Cairo system library is available. "
+                            "On macOS: brew install cairo"
                         ),
                         compact=compact,
                     )
