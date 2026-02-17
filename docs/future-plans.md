@@ -20,24 +20,19 @@ Write support requires careful consideration of:
 
 ### Additional OCR Providers ([#25](https://github.com/wavyrai/rm-mcp/issues/25))
 
-Google Vision works well, but more options would be valuable:
+OCR currently uses **MCP sampling** — the client's own LLM reads handwriting from page images. No API keys or external services needed.
 
 | Provider | Status | Notes |
 |----------|--------|-------|
-| Google Vision | ✅ Implemented | Excellent handwriting recognition |
-| Tesseract | ✅ Implemented | Offline fallback, poor for handwriting |
-| **Microsoft Azure** | 🔮 Planned | Competitive handwriting OCR |
-| **Mistral** | 🔮 Planned | Open-weight models with vision |
-| **Claude Vision** | 🔮 Possible | Direct integration with Claude |
+| MCP Sampling | ✅ Implemented | Uses client LLM (Claude, GPT-4, etc.), no API keys |
+| **Microsoft Azure** | 🔮 Possible | Competitive handwriting OCR |
 | **Local LLaVA** | 🔮 Possible | Fully offline, privacy-focused |
-
-The goal is **BYOK (Bring Your Own Key)** — let users choose their preferred provider.
 
 ### Enhanced Search ([#26](https://github.com/wavyrai/rm-mcp/issues/26))
 
-- **Full-text indexing** — Index all documents for instant search
+- ~~**Full-text indexing** — Index all documents for instant search~~ ✅ Implemented (SQLite FTS5)
+- ~~**Cross-document search** — Search annotations across your entire library~~ ✅ Implemented
 - **Semantic search** — Find documents by meaning, not just keywords
-- **Cross-document search** — Search annotations across your entire library
 
 ### Obsidian Integration
 
@@ -69,12 +64,12 @@ Popular requests we're tracking:
 ### Performance ([#28](https://github.com/wavyrai/rm-mcp/issues/28))
 
 - **Parallel resource registration** — Faster startup for large libraries
-- **Incremental sync** — Only fetch changed documents
-- **Persistent cache** — Cache OCR results across sessions
+- ~~**Incremental sync** — Only fetch changed documents~~ ✅ Implemented (root hash change detection)
+- ~~**Persistent cache** — Cache OCR results across sessions~~ ✅ Implemented (SQLite index)
 
 ### Reliability ([#29](https://github.com/wavyrai/rm-mcp/issues/29))
 
-- **Retry logic** — Handle transient API failures
+- ~~**Retry logic** — Handle transient API failures~~ ✅ Implemented (connection pooling & retry in cloud client)
 - **Health checks** — Proactive connection monitoring
 
 ### Developer Experience

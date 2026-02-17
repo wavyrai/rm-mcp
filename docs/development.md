@@ -27,19 +27,41 @@ uv run pytest test_server.py -v
 ```
 rm-mcp/
 ├── server.py              # Entry point (backwards compatible)
-├── rm_mcp/        # Main package
+├── rm_mcp/                # Main package
 │   ├── __init__.py
 │   ├── server.py          # FastMCP server initialization
+│   ├── cli.py             # CLI (--setup, --register, server mode)
 │   ├── api.py             # reMarkable Cloud API helpers
-│   ├── extract.py         # Text extraction utilities
+│   ├── models.py          # Document/Folder dataclasses
+│   ├── paths.py           # Path utilities & root path filtering
+│   ├── index.py           # SQLite FTS5 full-text search index
+│   ├── cache.py           # Multi-layer caching
 │   ├── responses.py       # Response formatting
-│   ├── tools.py           # MCP tools with annotations
 │   ├── resources.py       # MCP resources
-│   └── prompts.py         # MCP prompts
+│   ├── prompts.py         # MCP prompts
+│   ├── capabilities.py    # Client capability detection
+│   ├── tools/             # Tool implementations
+│   │   ├── read.py        # remarkable_read
+│   │   ├── browse.py      # remarkable_browse
+│   │   ├── search.py      # remarkable_search
+│   │   ├── recent.py      # remarkable_recent
+│   │   ├── image.py       # remarkable_image
+│   │   └── status.py      # remarkable_status
+│   ├── extract/           # Content extraction
+│   │   ├── notebook.py    # .rm file parsing
+│   │   ├── pdf.py         # PDF text extraction
+│   │   ├── epub.py        # EPUB text extraction
+│   │   └── render.py      # Page rendering (PNG/SVG)
+│   ├── ocr/               # OCR backends
+│   │   └── sampling.py    # MCP sampling-based OCR
+│   └── clients/
+│       └── cloud.py       # reMarkable Cloud API v3/v4 client
 ├── test_server.py         # Test suite
+├── setup.sh               # One-line installer
+├── server.json            # MCP Registry definition
 ├── pyproject.toml         # Project config and dependencies
 ├── docs/                  # Documentation
-└── README.md              # Main documentation
+└── README.md
 ```
 
 ## Running Tests
@@ -81,23 +103,24 @@ uv run ruff format .
 # Create a feature branch
 git checkout -b feature/my-feature
 
-# After making changes
-git add -A
+# After making changes — add specific files, never use git add -A
+git add rm_mcp/tools/read.py test_server.py
 git commit -m "feat: description of change"
 git push origin feature/my-feature
 # Then create PR via GitHub
 ```
 
-Branch protection is enabled on `main` - all changes must go through pull requests with passing CI.
+**Important:** Never use `git add -A` or `git add .` — this can accidentally commit sensitive files like `.mcpregistry_*` tokens. Always add files by name.
 
 ## Adding a New Tool
 
-1. Add the tool function in `rm_mcp/tools.py` with proper docstring and annotations
-2. Create unique `ToolAnnotations` with a descriptive title
-3. Add tests in `test_server.py`
-4. Update the tools table in README.md
-5. Update `docs/tools.md` with detailed documentation
-6. Run tests: `uv run pytest test_server.py -v`
+1. Create a new file in `rm_mcp/tools/` (e.g. `rm_mcp/tools/my_tool.py`)
+2. Register it in `rm_mcp/tools/__init__.py`
+3. Create unique `ToolAnnotations` with a descriptive title
+4. Add tests in `test_server.py`
+5. Update the tools table in README.md
+6. Update `docs/tools.md` with detailed documentation
+7. Run tests: `uv run pytest test_server.py -v`
 
 ### Tool Design Principles
 
@@ -140,22 +163,20 @@ Releases are automated via GitHub Actions. The version is derived from the git t
 1. Ensure all changes are merged to `main`
 2. Ensure README.md and docs are current
 3. Ensure CI is passing on `main`
-4. Create and push a version tag:
+4. Update version in `pyproject.toml` and `server.json`
+5. Commit, tag, and push:
 
 ```bash
-# Check current version
-git tag -l 'v*' | sort -V | tail -1
-
-# Create next version tag
-git tag v0.X.0
-git push origin v0.X.0
+git tag v0.X.Y
+git push && git push --tags
 ```
 
 The workflow automatically:
 - Creates a GitHub release with generated notes
+- Runs tests and linting
 - Builds the package with the tag version
-- Publishes to PyPI
-- Publishes to MCP Registry
+- Publishes to PyPI (trusted publishing via OIDC)
+- Publishes to MCP Registry (GitHub OIDC authentication)
 
 ## Key Dependencies
 
@@ -166,13 +187,14 @@ The workflow automatically:
 | `rmscene` | Native .rm file parser for text extraction |
 | `pymupdf` | PDF text extraction |
 | `ebooklib` | EPUB text extraction |
-| `pytesseract` | OCR fallback |
-| `google-cloud-vision` | OCR (recommended) |
+| `cairosvg` | SVG to PNG rendering |
+| `Pillow` | Image processing |
+| `beautifulsoup4` | HTML/XML parsing for EPUBs |
+| `rmc` | reMarkable rendering tools |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `REMARKABLE_TOKEN` | Cloud API authentication token |
-| `GOOGLE_VISION_API_KEY` | Google Vision API key for OCR |
-| `REMARKABLE_OCR_BACKEND` | Force OCR backend: `auto`, `google`, `tesseract` |
+| `REMARKABLE_OCR_BACKEND` | OCR backend: `sampling` (default, uses client LLM) |
