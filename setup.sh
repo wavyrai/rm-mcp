@@ -112,6 +112,46 @@ main() {
     -e REMARKABLE_OCR_BACKEND=sampling \
     -- uvx rm-mcp
   ok "MCP server added to Claude Code!"
+  printf "\n"
+
+  # --- Step 4: Configure Claude Desktop (macOS only) ---
+  if $IS_MAC; then
+    info "${bold}Step 4${reset} ${dim}→${reset} Configuring Claude Desktop..."
+    DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+    mkdir -p "$(dirname "$DESKTOP_CONFIG")"
+    python3 -c "
+import json, os, sys
+
+path = sys.argv[1]
+token = sys.argv[2]
+
+# Read existing config or start fresh
+try:
+    with open(path) as f:
+        config = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    config = {}
+
+# Ensure mcpServers key exists
+config.setdefault('mcpServers', {})
+
+# Set the remarkable server entry
+config['mcpServers']['remarkable'] = {
+    'command': 'uvx',
+    'args': ['rm-mcp'],
+    'env': {
+        'REMARKABLE_TOKEN': token,
+        'REMARKABLE_OCR_BACKEND': 'sampling'
+    }
+}
+
+with open(path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+" "$DESKTOP_CONFIG" "$TOKEN"
+    ok "MCP server added to Claude Desktop!"
+    info "${dim}Restart Claude Desktop to pick up the new config.${reset}"
+  fi
 
   printf "\n  ${green}You're all set!${reset} Start a new Claude Code session to use your reMarkable.\n\n"
 }
