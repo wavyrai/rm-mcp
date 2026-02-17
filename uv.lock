@@ -1131,7 +1131,7 @@ wheels = [
 
 [[package]]
 name = "rm-mcp"
-version = "0.4.6"
+version = "0.4.7"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

@@ -103,7 +103,7 @@ When modifying `setup.sh`, commit and push to **both** repos.
 Key details:
 - `claude mcp add` uses `|| true` so the script continues even if the server is already configured
 - Claude Desktop config uses the **full path to uvx** (resolved via `command -v uvx`) because Claude Desktop has a limited PATH and can't find `~/.local/bin/uvx`
-- All `uvx` commands use `--refresh` so users always get the latest version from PyPI
+- All `uvx` commands use `rm-mcp@latest` (not `--refresh rm-mcp`) to ensure the latest PyPI version is always used, even if a persistent tool install exists
 
 ## MCP Registry
 
@@ -139,5 +139,5 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 
 - **Never use `git add -A`** — it can pick up sensitive files like `.mcpregistry_*` tokens. Always add specific files by name.
 - **Claude Desktop needs full path to uvx** — `"command": "uvx"` fails because Desktop has a limited PATH. Use the absolute path (e.g. `/Users/you/.local/bin/uvx`).
-- **uvx caching** — `uvx rm-mcp` caches aggressively. Use `--refresh` to check for updates. If that's not enough, `uv cache clean rm-mcp --force` clears the cache (may need `--force` if an MCP server process holds the lock).
+- **uvx caching** — Always use `uvx rm-mcp@latest` (not `uvx --refresh rm-mcp`). The `--refresh` flag only refreshes the cache but does NOT upgrade if `rm-mcp` was installed as a persistent tool via `uv tool install`. The `@latest` suffix forces uvx to use the latest PyPI version in an ephemeral environment, bypassing persistent installs entirely.
 - **PyPI trusted publishing** — configured via OIDC in the `pypi` GitHub environment. No API tokens needed. The workflow file is `publish.yml` and environment name is `pypi`.

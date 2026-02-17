@@ -48,7 +48,7 @@ def _print_config_instructions(token: str) -> None:
         "claude mcp add remarkable \\",
         f"  -e REMARKABLE_TOKEN='{token}' \\",
         "  -e REMARKABLE_OCR_BACKEND=sampling \\",
-        "  -- uvx --refresh rm-mcp",
+        "  -- uvx rm-mcp@latest",
     ]
     print(box("Claude Code", code_lines))
 
@@ -60,7 +60,7 @@ def _print_config_instructions(token: str) -> None:
             "mcpServers": {
                 "remarkable": {
                     "command": uvx_path,
-                    "args": ["--refresh", "rm-mcp"],
+                    "args": ["rm-mcp@latest"],
                     "env": {
                         "REMARKABLE_TOKEN": token,
                     },
@@ -173,7 +173,7 @@ Examples:
                 "claude mcp add remarkable \\",
                 f"  -e REMARKABLE_TOKEN='{token}' \\",
                 "  -e REMARKABLE_OCR_BACKEND=sampling \\",
-                "  -- uvx --refresh rm-mcp",
+                "  -- uvx rm-mcp@latest",
             ]
             print(box("Claude Code", code_lines))
 
@@ -186,7 +186,7 @@ Examples:
                     "mcpServers": {
                         "remarkable": {
                             "command": uvx_path,
-                            "args": ["--refresh", "rm-mcp"],
+                            "args": ["rm-mcp@latest"],
                             "env": {
                                 "REMARKABLE_TOKEN": token,
                             },

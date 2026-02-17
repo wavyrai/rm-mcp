@@ -101,7 +101,7 @@ main() {
   [ -z "$CODE" ] && fail "No code entered. Setup cancelled."
 
   info "  Registering..."
-  TOKEN=$(uvx --refresh rm-mcp --register "$CODE" --quiet) || fail "Registration failed. Is the code correct?"
+  TOKEN=$(uvx rm-mcp@latest --register "$CODE" --quiet) || fail "Registration failed. Is the code correct?"
   ok "Successfully registered!"
   printf "\n"
 
@@ -110,7 +110,7 @@ main() {
   claude mcp add remarkable \
     -e REMARKABLE_TOKEN="$TOKEN" \
     -e REMARKABLE_OCR_BACKEND=sampling \
-    -- uvx --refresh rm-mcp || true
+    -- uvx rm-mcp@latest || true
   ok "MCP server added to Claude Code!"
   printf "\n"
 
@@ -140,7 +140,7 @@ config.setdefault('mcpServers', {})
 # Set the remarkable server entry (use full path so Claude Desktop can find uvx)
 config['mcpServers']['remarkable'] = {
     'command': uvx_path,
-    'args': ['--refresh', 'rm-mcp'],
+    'args': ['rm-mcp@latest'],
     'env': {
         'REMARKABLE_TOKEN': token,
         'REMARKABLE_OCR_BACKEND': 'sampling'
