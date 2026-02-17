@@ -54,13 +54,13 @@ claude mcp add remarkable \
   -- uvx --refresh rm-mcp
 ```
 
-**Claude Desktop** — add to `claude_desktop_config.json`:
+**Claude Desktop** — add to `claude_desktop_config.json` (use full path to `uvx`, e.g. from `which uvx`):
 
 ```json
 {
   "mcpServers": {
     "remarkable": {
-      "command": "uvx",
+      "command": "/Users/YOU/.local/bin/uvx",
       "args": ["--refresh", "rm-mcp"],
       "env": {
         "REMARKABLE_TOKEN": "<paste token from step 2>"

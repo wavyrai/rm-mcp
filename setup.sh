@@ -119,11 +119,13 @@ main() {
     info "${bold}Step 4${reset} ${dim}→${reset} Configuring Claude Desktop..."
     DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
     mkdir -p "$(dirname "$DESKTOP_CONFIG")"
+    UVX_PATH=$(command -v uvx)
     python3 -c "
 import json, os, sys
 
 path = sys.argv[1]
 token = sys.argv[2]
+uvx_path = sys.argv[3]
 
 # Read existing config or start fresh
 try:
@@ -135,9 +137,9 @@ except (FileNotFoundError, json.JSONDecodeError):
 # Ensure mcpServers key exists
 config.setdefault('mcpServers', {})
 
-# Set the remarkable server entry
+# Set the remarkable server entry (use full path so Claude Desktop can find uvx)
 config['mcpServers']['remarkable'] = {
-    'command': 'uvx',
+    'command': uvx_path,
     'args': ['--refresh', 'rm-mcp'],
     'env': {
         'REMARKABLE_TOKEN': token,
@@ -148,7 +150,7 @@ config['mcpServers']['remarkable'] = {
 with open(path, 'w') as f:
     json.dump(config, f, indent=2)
     f.write('\n')
-" "$DESKTOP_CONFIG" "$TOKEN"
+" "$DESKTOP_CONFIG" "$TOKEN" "$UVX_PATH"
     ok "MCP server added to Claude Desktop!"
     info "${dim}Restart Claude Desktop to pick up the new config.${reset}"
   fi

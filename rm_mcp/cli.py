@@ -29,8 +29,16 @@ except Exception:
     _VERSION = "dev"
 
 
+def _get_uvx_path() -> str:
+    """Get the full path to uvx for Claude Desktop compatibility."""
+    import shutil
+
+    return shutil.which("uvx") or "uvx"
+
+
 def _print_config_instructions(token: str) -> None:
     """Print ready-to-paste config for Claude Code and Claude Desktop."""
+    uvx_path = _get_uvx_path()
     print()
     print(step(3, "Add to your MCP client:"))
     print()
@@ -46,12 +54,12 @@ def _print_config_instructions(token: str) -> None:
 
     print()
 
-    # Claude Desktop box
+    # Claude Desktop box (use full path so Desktop can find uvx)
     desktop_config = json.dumps(
         {
             "mcpServers": {
                 "remarkable": {
-                    "command": "uvx",
+                    "command": uvx_path,
                     "args": ["--refresh", "rm-mcp"],
                     "env": {
                         "REMARKABLE_TOKEN": token,
@@ -171,12 +179,13 @@ Examples:
 
             print()
 
-            # Claude Desktop box
+            # Claude Desktop box (use full path so Desktop can find uvx)
+            uvx_path = _get_uvx_path()
             desktop_config = json.dumps(
                 {
                     "mcpServers": {
                         "remarkable": {
-                            "command": "uvx",
+                            "command": uvx_path,
                             "args": ["--refresh", "rm-mcp"],
                             "env": {
                                 "REMARKABLE_TOKEN": token,
