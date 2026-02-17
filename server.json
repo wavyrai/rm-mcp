@@ -1,18 +1,18 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.wavyrai/rm-mcp",
   "title": "reMarkable MCP Server",
-  "description": "Access your reMarkable tablet - read documents, browse files, extract text and OCR",
+  "description": "Access your reMarkable tablet - read documents, browse files, extract text and OCR handwritten notes",
   "repository": {
     "url": "https://github.com/wavyrai/rm-mcp",
     "source": "github"
   },
-  "version": "0.1.0",
+  "version": "0.4.5",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "rm-mcp",
-      "version": "0.1.0",
+      "version": "0.4.5",
       "transport": {
         "type": "stdio"
       },
