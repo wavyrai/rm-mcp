@@ -47,9 +47,7 @@ def get_cached_collection() -> Tuple[Any, List]:
 
     client = get_rmapi()
     if client is None:
-        raise RuntimeError(
-            "Not authenticated. Run: uvx rm-mcp --setup"
-        )
+        raise RuntimeError("Not authenticated. Run: uvx rm-mcp --setup")
     now = time.time()
 
     # If we have a valid cache within TTL, return immediately
@@ -106,6 +104,7 @@ def set_cached_collection(client, collection, root_hash: Optional[str] = None) -
 
     # Also set the client singleton in api.py
     import rm_mcp.api as api_mod
+
     api_mod._client_singleton = client
 
     _cached_collection = collection

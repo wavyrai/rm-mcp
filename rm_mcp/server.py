@@ -77,7 +77,7 @@ Access documents from your reMarkable tablet. All operations are read-only.
 1. Use `remarkable_search("keyword")` to find documents by name or content
 2. Use `remarkable_read("Document Name")` to get content
 3. Use `remarkable_read("Document", pages="all")` to get complete content in one call
-4. Use `remarkable_read("Document", grep="pattern")` to search within a document (auto-redirects to matching page)
+4. Use `remarkable_read("Document", grep="pattern")` to search within a document
 
 ### Getting Page Images
 Use `remarkable_image` when you need visual context:
@@ -108,13 +108,12 @@ This requires no external API keys - it uses your client's capabilities.
 @asynccontextmanager
 async def lifespan(app: FastMCP) -> AsyncIterator[None]:
     """Lifespan context manager for the MCP server."""
+    # Initialize the persistent document index (L2 cache)
+    from rm_mcp import index as _index_mod
     from rm_mcp.resources import (
         start_background_loader,
         stop_background_loader,
     )
-
-    # Initialize the persistent document index (L2 cache)
-    from rm_mcp import index as _index_mod
 
     idx = _index_mod.initialize()
     if idx is not None:

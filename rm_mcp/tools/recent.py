@@ -5,7 +5,9 @@ from rm_mcp.tools import _helpers
 
 
 @mcp.tool(annotations=_helpers.RECENT_ANNOTATIONS)
-def remarkable_recent(limit: int = 10, include_preview: bool = False, compact_output: bool = False) -> str:
+def remarkable_recent(
+    limit: int = 10, include_preview: bool = False, compact_output: bool = False
+) -> str:
     """
     <usecase>Get your most recently modified documents.</usecase>
     <instructions>

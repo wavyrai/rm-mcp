@@ -108,12 +108,13 @@ async def remarkable_search(
 
         # Limit name-search results to fill remaining slots
         remaining = limit - len(fts_results)
-        matching_docs = matching_docs[:max(0, remaining)]
+        matching_docs = matching_docs[: max(0, remaining)]
 
         # Get index reference for L2 lookups
         index = None
         try:
             from rm_mcp.index import get_instance
+
             index = get_instance()
         except Exception:
             pass
@@ -198,7 +199,8 @@ async def remarkable_search(
                 total_docs = sum(
                     1
                     for item in collection
-                    if not item.is_folder and not _helpers._is_cloud_archived(item)
+                    if not item.is_folder
+                    and not _helpers._is_cloud_archived(item)
                     and _helpers._is_within_root(_helpers.get_item_path(item, items_by_id), root)
                 )
                 index_coverage = {"indexed": indexed_count, "total": total_docs}

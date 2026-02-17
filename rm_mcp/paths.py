@@ -8,7 +8,6 @@ import os
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
-
 # --- Root path utilities ---
 
 
@@ -58,7 +57,7 @@ def _apply_root_filter(path: str, root: Optional[str] = None) -> str:
     if path_lower == root_lower:
         return "/"
     if path_lower.startswith(root_lower + "/"):
-        return path[len(root):]
+        return path[len(root) :]
     return path
 
 

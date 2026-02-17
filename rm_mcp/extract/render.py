@@ -84,6 +84,7 @@ def _find_rmc() -> str:
         return found
     raise FileNotFoundError("rmc binary not found")
 
+
 # Margin around content when using content-based bounding box (in pixels)
 CONTENT_MARGIN = 50
 
@@ -248,8 +249,7 @@ def render_rm_file_to_png(
 
         except ImportError:
             raise RuntimeError(
-                "cairosvg is required for PNG rendering. "
-                "Install it with: pip install cairosvg"
+                "cairosvg is required for PNG rendering. Install it with: pip install cairosvg"
             )
 
     except subprocess.TimeoutExpired:
@@ -462,5 +462,3 @@ def render_page_from_document_zip(
                 output_height=REMARKABLE_HEIGHT,
             )
         return render_rm_file_to_png(target_rm_file, background_color=background_color)
-
-

@@ -151,9 +151,7 @@ def _make_svg_resource(client, document):
     return svg_resource
 
 
-def _register_document(
-    client, doc, items_by_id=None, root: str = "/"
-) -> bool:
+def _register_document(client, doc, items_by_id=None, root: str = "/") -> bool:
     """Register a single document as resources.
 
     Registers:
@@ -387,12 +385,8 @@ async def _load_documents_background(shutdown_event: asyncio.Event):
                             )
                             # Check for stale content BEFORE upserting
                             # (upsert overwrites the hash, making comparison impossible)
-                            if doc_hash and index.needs_reindex(
-                                doc.ID, str(doc_hash)
-                            ):
-                                logger.debug(
-                                    f"Document '{doc.VissibleName}' needs re-indexing"
-                                )
+                            if doc_hash and index.needs_reindex(doc.ID, str(doc_hash)):
+                                logger.debug(f"Document '{doc.VissibleName}' needs re-indexing")
                             index.upsert_document(
                                 doc_id=doc.ID,
                                 doc_hash=str(doc_hash) if doc_hash else None,

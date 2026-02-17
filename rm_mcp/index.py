@@ -127,9 +127,7 @@ class DocumentIndex:
         conn.executescript(_SCHEMA_SQL)
 
         # Schema versioning: detect stale DB and rebuild if needed
-        row = conn.execute(
-            "SELECT value FROM _meta WHERE key = 'schema_version'"
-        ).fetchone()
+        row = conn.execute("SELECT value FROM _meta WHERE key = 'schema_version'").fetchone()
         stored_version = int(row["value"]) if row else 0
 
         if stored_version < _SCHEMA_VERSION:
@@ -178,7 +176,8 @@ class DocumentIndex:
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
             """
-            INSERT INTO documents (doc_id, doc_hash, name, path, file_type, modified_at, page_count, indexed_at)
+            INSERT INTO documents
+                (doc_id, doc_hash, name, path, file_type, modified_at, page_count, indexed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doc_id) DO UPDATE SET
                 doc_hash = COALESCE(excluded.doc_hash, documents.doc_hash),
@@ -196,9 +195,7 @@ class DocumentIndex:
     def get_document_hash(self, doc_id: str) -> Optional[str]:
         """Get the stored hash for a document."""
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT doc_hash FROM documents WHERE doc_id = ?", (doc_id,)
-        ).fetchone()
+        row = conn.execute("SELECT doc_hash FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
         return row["doc_hash"] if row else None
 
     def needs_reindex(self, doc_id: str, current_hash: str) -> bool:
@@ -215,8 +212,7 @@ class DocumentIndex:
             conn = self._get_connection()
             # Delete FTS entries for this document's pages
             conn.execute(
-                "DELETE FROM pages_fts WHERE rowid IN "
-                "(SELECT rowid FROM pages WHERE doc_id = ?)",
+                "DELETE FROM pages_fts WHERE rowid IN (SELECT rowid FROM pages WHERE doc_id = ?)",
                 (doc_id,),
             )
             conn.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
@@ -250,9 +246,7 @@ class DocumentIndex:
         if existing:
             old_rowid = existing[0]
             # Delete old FTS entry
-            conn.execute(
-                "DELETE FROM pages_fts WHERE rowid = ?", (old_rowid,)
-            )
+            conn.execute("DELETE FROM pages_fts WHERE rowid = ?", (old_rowid,))
 
         conn.execute(
             """
@@ -336,14 +330,13 @@ class DocumentIndex:
                 (doc_id, page_number, content_type),
             ).fetchone()
             if existing:
-                conn.execute(
-                    "DELETE FROM pages_fts WHERE rowid = ?", (existing[0],)
-                )
+                conn.execute("DELETE FROM pages_fts WHERE rowid = ?", (existing[0],))
 
             # Upsert the page
             conn.execute(
                 """
-                INSERT INTO pages (doc_id, page_number, content_type, content, ocr_backend, indexed_at)
+                INSERT INTO pages
+                    (doc_id, page_number, content_type, content, ocr_backend, indexed_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(doc_id, page_number, content_type) DO UPDATE SET
                     content = excluded.content,
@@ -370,9 +363,7 @@ class DocumentIndex:
     # Search
     # -----------------------------------------------------------------
 
-    def search(
-        self, query: str, limit: int = 10
-    ) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Full-text search across indexed page content.
 
         Uses FTS5 MATCH with bm25 ranking and snippet context.
@@ -456,9 +447,7 @@ class DocumentIndex:
     def get_indexed_document_count(self) -> int:
         """Count documents that have at least one indexed page."""
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT COUNT(DISTINCT doc_id) FROM pages"
-        ).fetchone()
+        row = conn.execute("SELECT COUNT(DISTINCT doc_id) FROM pages").fetchone()
         return row[0] if row else 0
 
     # -----------------------------------------------------------------

@@ -202,7 +202,8 @@ class RemarkableClient:
                 except Exception:
                     logger.warning(
                         "Failed to fetch/parse metadata for document %s (blob hash=%s)",
-                        doc_id, blob_entry["hash"],
+                        doc_id,
+                        blob_entry["hash"],
                     )
 
         # Skip deleted documents
@@ -270,7 +271,8 @@ class RemarkableClient:
 
             if "hash" not in root_data:
                 raise RuntimeError(
-                    f"Unexpected API response format: {root_data}\nThe reMarkable API may have changed."
+                    f"Unexpected API response format: {root_data}\n"
+                    "The reMarkable API may have changed."
                 )
 
             root_hash = root_data["hash"]
@@ -289,8 +291,7 @@ class RemarkableClient:
         documents = []
         with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as executor:
             futures = {
-                executor.submit(self._fetch_document_meta, entry): entry
-                for entry in entries
+                executor.submit(self._fetch_document_meta, entry): entry for entry in entries
             }
             for future in as_completed(futures):
                 try:
@@ -301,7 +302,8 @@ class RemarkableClient:
                     entry = futures[future]
                     logger.warning(
                         "Failed to fetch metadata for entry %s (hash=%s)",
-                        entry.get("id", "unknown"), entry.get("hash", "unknown"),
+                        entry.get("id", "unknown"),
+                        entry.get("hash", "unknown"),
                     )
 
         self._documents = documents
@@ -338,7 +340,9 @@ class RemarkableClient:
                 except Exception:
                     logger.warning(
                         "Failed to download file %s (hash=%s) for document %s",
-                        file_id, file_hash, doc.id,
+                        file_id,
+                        file_hash,
+                        doc.id,
                     )
                     continue
 
@@ -428,10 +432,7 @@ def load_client_from_file(token_file: Path = Path.home() / ".rmapi") -> Remarkab
         Configured RemarkableClient
     """
     if not token_file.exists():
-        raise RuntimeError(
-            f"Token file not found: {token_file}\n"
-            "Run: uvx rm-mcp --setup"
-        )
+        raise RuntimeError(f"Token file not found: {token_file}\nRun: uvx rm-mcp --setup")
 
     token_json = token_file.read_text()
     return load_client_from_token(token_json)

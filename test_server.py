@@ -1414,9 +1414,7 @@ class TestRemarkableRecentExtended:
 
         # Also need to mock _get_file_type_cached to return "pdf" so preview is attempted
         with patch("rm_mcp.tools._helpers._get_file_type_cached", return_value="pdf"):
-            result = await mcp.call_tool(
-                "remarkable_recent", {"limit": 5, "include_preview": True}
-            )
+            result = await mcp.call_tool("remarkable_recent", {"limit": 5, "include_preview": True})
             data = json.loads(result[0][0].text)
 
         assert data["count"] == 1
@@ -1539,9 +1537,7 @@ class TestRemarkableImageExtended:
 
         mock_get_cached.return_value = (mock_client, [doc])
 
-        result = await mcp.call_tool(
-            "remarkable_image", {"document": "Meeting Noets"}
-        )
+        result = await mcp.call_tool("remarkable_image", {"document": "Meeting Noets"})
         data = json.loads(result[0].text)
 
         assert "_error" in data
@@ -1746,9 +1742,7 @@ class TestOCRAutoRetry:
                 side_effect=[empty_content, ocr_content],
             ),
         ):
-            result = await mcp.call_tool(
-                "remarkable_read", {"document": "Handwritten Notes"}
-            )
+            result = await mcp.call_tool("remarkable_read", {"document": "Handwritten Notes"})
             data = json.loads(result[0][0].text)
 
         # Should have auto-enabled OCR
@@ -1953,9 +1947,7 @@ class TestRemarkableSearch:
 
         mock_get_cached.return_value = (mock_client, [doc])
 
-        result = await mcp.call_tool(
-            "remarkable_search", {"query": "NonExistentDocument"}
-        )
+        result = await mcp.call_tool("remarkable_search", {"query": "NonExistentDocument"})
         data = json.loads(result[0][0].text)
 
         assert "_error" in data
@@ -2019,9 +2011,7 @@ class TestRemarkableSearch:
 
         mock_get_cached.return_value = (mock_client, docs)
 
-        result = await mcp.call_tool(
-            "remarkable_search", {"query": "Note", "limit": 10}
-        )
+        result = await mcp.call_tool("remarkable_search", {"query": "Note", "limit": 10})
         data = json.loads(result[0][0].text)
 
         # Even though limit=10 was passed, max is 5
@@ -2070,9 +2060,7 @@ class TestRemarkableReadHappyPath:
             "pages": 1,
         }
 
-        result = await mcp.call_tool(
-            "remarkable_read", {"document": "Typed Notes"}
-        )
+        result = await mcp.call_tool("remarkable_read", {"document": "Typed Notes"})
         data = json.loads(result[0][0].text)
 
         assert "content" in data
@@ -2087,9 +2075,7 @@ class TestRemarkableReadHappyPath:
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
     @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
     @patch(_PATCH_CACHED)
-    async def test_read_pdf_with_content(
-        self, mock_get_cached, mock_extract_zip, mock_file_type
-    ):
+    async def test_read_pdf_with_content(self, mock_get_cached, mock_extract_zip, mock_file_type):
         """Test reading a PDF document with annotation content."""
         mock_client = Mock()
 
@@ -2114,9 +2100,7 @@ class TestRemarkableReadHappyPath:
             "pages": 1,
         }
 
-        result = await mcp.call_tool(
-            "remarkable_read", {"document": "Report.pdf"}
-        )
+        result = await mcp.call_tool("remarkable_read", {"document": "Report.pdf"})
         data = json.loads(result[0][0].text)
 
         assert data["file_type"] == "pdf"
@@ -2127,9 +2111,7 @@ class TestRemarkableReadHappyPath:
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
     @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
     @patch(_PATCH_CACHED)
-    async def test_read_page_out_of_range(
-        self, mock_get_cached, mock_extract, mock_file_type
-    ):
+    async def test_read_page_out_of_range(self, mock_get_cached, mock_extract, mock_file_type):
         """Test reading a page that doesn't exist returns page_out_of_range error."""
         mock_client = Mock()
 
@@ -2154,9 +2136,7 @@ class TestRemarkableReadHappyPath:
             "pages": 1,
         }
 
-        result = await mcp.call_tool(
-            "remarkable_read", {"document": "Short Doc", "page": 999}
-        )
+        result = await mcp.call_tool("remarkable_read", {"document": "Short Doc", "page": 999})
         data = json.loads(result[0][0].text)
 
         assert "_error" in data
@@ -2175,9 +2155,7 @@ class TestRemarkableReadGrep:
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
     @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
     @patch(_PATCH_CACHED)
-    async def test_grep_with_matches(
-        self, mock_get_cached, mock_extract, mock_file_type
-    ):
+    async def test_grep_with_matches(self, mock_get_cached, mock_extract, mock_file_type):
         """Test grep that finds matching content."""
         mock_client = Mock()
 
@@ -2218,9 +2196,7 @@ class TestRemarkableReadGrep:
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
     @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
     @patch(_PATCH_CACHED)
-    async def test_grep_no_matches(
-        self, mock_get_cached, mock_extract, mock_file_type
-    ):
+    async def test_grep_no_matches(self, mock_get_cached, mock_extract, mock_file_type):
         """Test grep that finds no matching content returns empty."""
         mock_client = Mock()
 
@@ -2257,9 +2233,7 @@ class TestRemarkableReadGrep:
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
     @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
     @patch(_PATCH_CACHED)
-    async def test_grep_invalid_regex(
-        self, mock_get_cached, mock_extract, mock_file_type
-    ):
+    async def test_grep_invalid_regex(self, mock_get_cached, mock_extract, mock_file_type):
         """Test that an invalid regex pattern returns invalid_grep error."""
         mock_client = Mock()
 
@@ -2304,9 +2278,7 @@ class TestBrowseAutoRedirect:
     @pytest.mark.asyncio
     @patch("rm_mcp.tools.read.remarkable_read", new_callable=AsyncMock)
     @patch(_PATCH_CACHED)
-    async def test_browse_redirects_to_read_for_document_path(
-        self, mock_get_cached, mock_read
-    ):
+    async def test_browse_redirects_to_read_for_document_path(self, mock_get_cached, mock_read):
         """Test that browsing to a document path auto-redirects to read."""
         mock_client = Mock()
 
@@ -2334,9 +2306,7 @@ class TestBrowseAutoRedirect:
             }
         )
 
-        result = await mcp.call_tool(
-            "remarkable_browse", {"path": "/My Report"}
-        )
+        result = await mcp.call_tool("remarkable_browse", {"path": "/My Report"})
         data = json.loads(result[0][0].text)
 
         assert "_redirected_from" in data
@@ -2469,8 +2439,11 @@ class TestDocumentIndex:
         """Test basic FTS5 search."""
         idx = self._make_index()
         idx.upsert_document(
-            doc_id="doc-1", doc_hash="h1", name="Notes",
-            path="/Notes", file_type="notebook",
+            doc_id="doc-1",
+            doc_hash="h1",
+            name="Notes",
+            path="/Notes",
+            file_type="notebook",
         )
         idx.upsert_page("doc-1", 0, "The quantum physics experiment yielded results", "typed_text")
 
@@ -2661,7 +2634,8 @@ class TestSearchWithFTS:
                 file_type="notebook",
             )
             idx.upsert_page(
-                "doc-indexed", 0,
+                "doc-indexed",
+                0,
                 "The quarterly budget review showed growth",
                 "typed_text",
             )
@@ -2719,7 +2693,8 @@ class TestSearchWithFTS:
                 file_type="notebook",
             )
             idx.upsert_page(
-                "doc-1", 0,
+                "doc-1",
+                0,
                 "Photosynthesis is the process of converting sunlight",
                 "typed_text",
             )
@@ -2875,9 +2850,7 @@ class TestCompactMode:
 
     def test_make_error_compact_omits_suggestion(self):
         """Test that make_error with compact=True omits suggestion and did_you_mean."""
-        result = make_error(
-            "test_err", "msg", "suggestion", did_you_mean=["a", "b"], compact=True
-        )
+        result = make_error("test_err", "msg", "suggestion", did_you_mean=["a", "b"], compact=True)
         parsed = json.loads(result)
         assert parsed["_error"]["type"] == "test_err"
         assert parsed["_error"]["message"] == "msg"
@@ -2886,9 +2859,7 @@ class TestCompactMode:
 
     def test_make_error_non_compact_includes_suggestion(self):
         """Test that make_error with compact=False includes suggestion."""
-        result = make_error(
-            "test_err", "msg", "suggestion", did_you_mean=["a"], compact=False
-        )
+        result = make_error("test_err", "msg", "suggestion", did_you_mean=["a"], compact=False)
         parsed = json.loads(result)
         assert parsed["_error"]["suggestion"] == "suggestion"
         assert parsed["_error"]["did_you_mean"] == ["a"]
@@ -2918,9 +2889,7 @@ class TestCompactMode:
         mock_client = Mock()
         mock_get_cached.return_value = (mock_client, [])
 
-        result = await mcp.call_tool(
-            "remarkable_status", {"compact_output": True}
-        )
+        result = await mcp.call_tool("remarkable_status", {"compact_output": True})
         data = json.loads(result[0][0].text)
 
         assert data["authenticated"] is True
@@ -3053,9 +3022,7 @@ class TestMultiPageRead:
             "pages": 5,
         }
 
-        result = await mcp.call_tool(
-            "remarkable_read", {"document": "Range Notes", "pages": "2-4"}
-        )
+        result = await mcp.call_tool("remarkable_read", {"document": "Range Notes", "pages": "2-4"})
         data = json.loads(result[0][0].text)
 
         assert data["pages"] == [2, 3, 4]
@@ -3091,9 +3058,7 @@ class TestMultiPageRead:
             "pages": 1,
         }
 
-        result = await mcp.call_tool(
-            "remarkable_read", {"document": "Full PDF", "pages": "all"}
-        )
+        result = await mcp.call_tool("remarkable_read", {"document": "Full PDF", "pages": "all"})
         data = json.loads(result[0][0].text)
 
         assert data["more"] is False
@@ -3253,9 +3218,7 @@ class TestSearchPerformance:
             }
         )
 
-        result = await mcp.call_tool(
-            "remarkable_search", {"query": "Grep", "grep": "pattern"}
-        )
+        result = await mcp.call_tool("remarkable_search", {"query": "Grep", "grep": "pattern"})
         data = json.loads(result[0][0].text)
 
         assert data["count"] == 1
@@ -3591,9 +3554,7 @@ class TestAnnotationsMode:
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
     @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
     @patch(_PATCH_CACHED)
-    async def test_read_annotations_mode(
-        self, mock_get_cached, mock_extract, mock_file_type
-    ):
+    async def test_read_annotations_mode(self, mock_get_cached, mock_extract, mock_file_type):
         """Test reading annotations returns highlights and handwritten sections."""
         mock_client = Mock()
 
@@ -3637,9 +3598,7 @@ class TestAnnotationsMode:
     @patch("rm_mcp.tools._helpers._get_file_type_cached")
     @patch("rm_mcp.tools._helpers.extract_text_from_document_zip")
     @patch(_PATCH_CACHED)
-    async def test_read_annotations_empty(
-        self, mock_get_cached, mock_extract, mock_file_type
-    ):
+    async def test_read_annotations_empty(self, mock_get_cached, mock_extract, mock_file_type):
         """Test reading annotations when there are none returns gracefully."""
         mock_client = Mock()
 
@@ -3686,9 +3645,7 @@ class TestImageSVG:
     @patch("rm_mcp.tools._helpers.render_page_from_document_zip_svg")
     @patch("rm_mcp.tools._helpers.get_document_page_count", return_value=3)
     @patch(_PATCH_CACHED)
-    async def test_image_svg_compatibility(
-        self, mock_get_cached, mock_page_count, mock_render_svg
-    ):
+    async def test_image_svg_compatibility(self, mock_get_cached, mock_page_count, mock_render_svg):
         """Test SVG compatibility mode returns svg key and correct mime type."""
         mock_client = Mock()
 
@@ -3720,9 +3677,7 @@ class TestImageSVG:
     @patch("rm_mcp.tools._helpers.render_page_from_document_zip_svg")
     @patch("rm_mcp.tools._helpers.get_document_page_count", return_value=2)
     @patch(_PATCH_CACHED)
-    async def test_image_svg_embedded(
-        self, mock_get_cached, mock_page_count, mock_render_svg
-    ):
+    async def test_image_svg_embedded(self, mock_get_cached, mock_page_count, mock_render_svg):
         """Test SVG embedded mode returns TextContent + EmbeddedResource."""
         mock_client = Mock()
 
@@ -3757,9 +3712,7 @@ class TestImageSVG:
     @patch("rm_mcp.tools._helpers.render_page_from_document_zip_svg")
     @patch("rm_mcp.tools._helpers.get_document_page_count", return_value=1)
     @patch(_PATCH_CACHED)
-    async def test_image_svg_render_failed(
-        self, mock_get_cached, mock_page_count, mock_render_svg
-    ):
+    async def test_image_svg_render_failed(self, mock_get_cached, mock_page_count, mock_render_svg):
         """Test SVG render failure returns render_failed error."""
         mock_client = Mock()
 

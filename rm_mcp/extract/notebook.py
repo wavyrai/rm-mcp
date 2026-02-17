@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from rm_mcp.cache import (
+    _MAX_EXTRACTION_CACHE_SIZE,
     _extraction_cache,
     _is_cache_valid,
-    _MAX_EXTRACTION_CACHE_SIZE,
 )
 
 
@@ -260,7 +260,8 @@ def extract_text_from_document_zip(
         }
         if len(_extraction_cache) > _MAX_EXTRACTION_CACHE_SIZE:
             # Evict oldest entries (by insertion order, dicts are ordered in Python 3.7+)
-            keys_to_remove = list(_extraction_cache.keys())[:len(_extraction_cache) - _MAX_EXTRACTION_CACHE_SIZE]
+            excess = len(_extraction_cache) - _MAX_EXTRACTION_CACHE_SIZE
+            keys_to_remove = list(_extraction_cache.keys())[:excess]
             for key in keys_to_remove:
                 del _extraction_cache[key]
 

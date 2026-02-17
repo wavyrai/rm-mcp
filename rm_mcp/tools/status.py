@@ -98,8 +98,6 @@ def remarkable_status(compact_output: bool = False) -> str:
             "error": error_msg,
         }
 
-        hint = (
-            "To authenticate: run 'uvx rm-mcp --setup' and follow the instructions."
-        )
+        hint = "To authenticate: run 'uvx rm-mcp --setup' and follow the instructions."
 
         return _helpers.make_response(result, hint, compact=compact)

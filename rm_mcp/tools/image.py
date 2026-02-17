@@ -208,9 +208,7 @@ async def remarkable_image(
                             compact=compact,
                         )
                     else:
-                        image = ImageContent(
-                            type="image", data=png_base64, mimeType="image/png"
-                        )
+                        image = ImageContent(type="image", data=png_base64, mimeType="image/png")
                         info = TextContent(
                             type="text",
                             text=f"Page {page}/{total_pages} of '{target_doc.VissibleName}' "
@@ -292,9 +290,7 @@ async def remarkable_image(
                     return _helpers.make_response(response_data, hint, compact=compact)
                 else:
                     # Return PNG as ImageContent for direct visibility in clients
-                    image = ImageContent(
-                        type="image", data=png_base64, mimeType="image/png"
-                    )
+                    image = ImageContent(type="image", data=png_base64, mimeType="image/png")
 
                     info_text = f"Page {page}/{total_pages} of '{target_doc.VissibleName}' as PNG. "
                     info_text += f"Resource URI: {resource_uri}"
