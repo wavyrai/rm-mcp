@@ -229,9 +229,10 @@ async def remarkable_image(
                             f"Check server logs for details."
                         ),
                         suggestion=(
-                            "Make sure 'rmc' and 'cairosvg' are installed "
-                            "and the Cairo system library is available. "
-                            "On macOS: brew install cairo"
+                            "Make sure 'rmc' is installed. PNG conversion uses "
+                            "cairosvg when the Cairo system library is available "
+                            "(macOS: brew install cairo) and falls back to "
+                            "pymupdf otherwise."
                         ),
                         compact=compact,
                     )

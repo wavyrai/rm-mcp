@@ -209,10 +209,13 @@ def render_rm_file_to_png(
             output_width = REMARKABLE_WIDTH
             output_height = REMARKABLE_HEIGHT
 
-        # Convert SVG to PNG
+        # Convert SVG to PNG — prefer cairosvg; fall back to pymupdf where the
+        # native cairo library is unavailable (e.g. stock Windows)
+        from PIL import Image as PILImage
+
+        raw_png = None
         try:
             import cairosvg
-            from PIL import Image as PILImage
 
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_raw:
                 tmp_raw_path = Path(tmp_raw.name)
@@ -225,37 +228,45 @@ def render_rm_file_to_png(
                 output_height=output_height,
                 background_color=background_color,
             )
+            with open(tmp_raw_path, "rb") as f:
+                raw_png = f.read()
+        except (ImportError, OSError):
+            # cairocffi raises OSError at import time when no cairo shared
+            # library exists on the system (common on Windows)
+            import fitz
 
-            # If no background color specified (transparent), return as-is
-            if background_color is None:
-                with open(tmp_raw_path, "rb") as f:
-                    return f.read()
+            svg_doc = fitz.open(str(tmp_svg_path))
+            svg_page = svg_doc[0]
+            zoom = output_width / max(svg_page.rect.width, 1)
+            pix = svg_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
+            raw_png = pix.tobytes("png")
 
-            # If background color specified, ensure it's applied properly
-            img = PILImage.open(tmp_raw_path)
-            if img.mode == "RGBA" and background_color:
-                # Parse hex color (supports #RRGGBB and #RRGGBBAA formats)
-                r, g, b, a = _parse_hex_color(background_color)
-                # Create background and composite foreground on top
-                if a == 255:
-                    # Fully opaque background - convert to RGB
-                    bg = PILImage.new("RGB", img.size, (r, g, b))
-                    bg.paste(img, mask=img.split()[3])
-                    img = bg
-                elif a > 0:
-                    # Semi-transparent or transparent background
-                    bg = PILImage.new("RGBA", img.size, (r, g, b, a))
-                    img = PILImage.alpha_composite(bg, img)
-                # If a == 0 (fully transparent), return as-is
-            img.save(tmp_png_path)
+        # If no background color specified (transparent), return as-is
+        if background_color is None:
+            return raw_png
 
-            with open(tmp_png_path, "rb") as f:
-                return f.read()
+        # If background color specified, ensure it's applied properly
+        import io
 
-        except ImportError:
-            raise RuntimeError(
-                "cairosvg is required for PNG rendering. Install it with: pip install cairosvg"
-            )
+        img = PILImage.open(io.BytesIO(raw_png))
+        if img.mode == "RGBA" and background_color:
+            # Parse hex color (supports #RRGGBB and #RRGGBBAA formats)
+            r, g, b, a = _parse_hex_color(background_color)
+            # Create background and composite foreground on top
+            if a == 255:
+                # Fully opaque background - convert to RGB
+                bg = PILImage.new("RGB", img.size, (r, g, b))
+                bg.paste(img, mask=img.split()[3])
+                img = bg
+            elif a > 0:
+                # Semi-transparent or transparent background
+                bg = PILImage.new("RGBA", img.size, (r, g, b, a))
+                img = PILImage.alpha_composite(bg, img)
+            # If a == 0 (fully transparent), return as-is
+        img.save(tmp_png_path)
+
+        with open(tmp_png_path, "rb") as f:
+            return f.read()
 
     except subprocess.TimeoutExpired:
         logger.warning("rmc timed out rendering %s", rm_file_path)
@@ -456,19 +467,15 @@ def render_page_from_document_zip(
         # Render the requested page (None = blank page)
         target_rm_file = rm_files[page - 1]
         if target_rm_file is None:
-            # Render blank page as PNG via cairosvg
-            import cairosvg
+            # Render blank page as a solid-color PNG (no cairo dependency)
+            import io
+
+            from PIL import Image as PILImage
 
             bg = background_color or "#FBFBFB"
-            blank_svg = (
-                f'<svg xmlns="http://www.w3.org/2000/svg" '
-                f'width="{REMARKABLE_WIDTH}" height="{REMARKABLE_HEIGHT}">'
-                f'<rect width="100%" height="100%" fill="{bg}"/>'
-                f"</svg>"
-            )
-            return cairosvg.svg2png(
-                bytestring=blank_svg.encode("utf-8"),
-                output_width=REMARKABLE_WIDTH,
-                output_height=REMARKABLE_HEIGHT,
-            )
+            r, g, b, _ = _parse_hex_color(bg)
+            img = PILImage.new("RGB", (REMARKABLE_WIDTH, REMARKABLE_HEIGHT), (r, g, b))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
         return render_rm_file_to_png(target_rm_file, background_color=background_color)
