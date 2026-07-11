@@ -84,12 +84,19 @@ class RemarkableClient:
             "Re-authenticate by running: uvx rm-mcp --setup"
         )
 
-    def _request(self, url: str, method: str = "GET") -> requests.Response:
+    def _request(
+        self,
+        url: str,
+        method: str = "GET",
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> requests.Response:
         """Make an authenticated request using the pooled session."""
         if not self.user_token:
             self.renew_token()
 
         headers = {"Authorization": f"Bearer {self.user_token}"}
+        if extra_headers:
+            headers.update(extra_headers)
         response = self._session.request(method, url, headers=headers, timeout=60)
 
         if response.status_code == 401:
@@ -99,14 +106,22 @@ class RemarkableClient:
                 current_auth = f"Bearer {self.user_token}"
                 if headers["Authorization"] == current_auth:
                     self.renew_token()
-            headers = {"Authorization": f"Bearer {self.user_token}"}
+            headers["Authorization"] = f"Bearer {self.user_token}"
             response = self._session.request(method, url, headers=headers, timeout=60)
 
         return response
 
-    def _get_file(self, file_hash: str) -> bytes:
-        """Download a file by its hash."""
-        response = self._request(f"{FILES_URL}/{file_hash}")
+    def _get_file(self, file_hash: str, filename: str) -> bytes:
+        """Download a file by its hash.
+
+        Since ~2026-05-18 the sync API requires an ``rm-filename`` header whose
+        value is the blob's logical filename (``root.docSchema`` for the root
+        index, ``<uuid>.docSchema`` for document indexes, the entry's real
+        filename for content blobs); requests without it get HTTP 400.
+        """
+        response = self._request(
+            f"{FILES_URL}/{file_hash}", extra_headers={"rm-filename": filename}
+        )
         response.raise_for_status()
         return response.content
 
@@ -183,7 +198,7 @@ class RemarkableClient:
 
         # Fetch the document's blob index
         try:
-            blob_content = self._get_file(doc_hash)
+            blob_content = self._get_file(doc_hash, f"{doc_id}.docSchema")
             blob_entries = self._parse_index(blob_content)
         except Exception:
             logger.debug("Failed to fetch blob index for document %s (hash=%s)", doc_id, doc_hash)
@@ -197,7 +212,7 @@ class RemarkableClient:
             files.append(blob_entry)
             if blob_entry["id"].endswith(".metadata"):
                 try:
-                    meta_content = self._get_file(blob_entry["hash"])
+                    meta_content = self._get_file(blob_entry["hash"], blob_entry["id"])
                     metadata = json.loads(meta_content.decode("utf-8"))
                 except Exception:
                     logger.warning(
@@ -279,7 +294,7 @@ class RemarkableClient:
 
         # Get root index
         try:
-            root_index = self._get_file(root_hash)
+            root_index = self._get_file(root_hash, "root.docSchema")
             entries = self._parse_index(root_index)
         except Exception as e:
             raise RuntimeError(f"Failed to parse root index (hash={root_hash}): {e}") from e
@@ -324,7 +339,7 @@ class RemarkableClient:
         import io
         import zipfile
 
-        blob_content = self._get_file(doc.hash)
+        blob_content = self._get_file(doc.hash, f"{doc.id}.docSchema")
         blob_entries = self._parse_index(blob_content)
 
         zip_buffer = io.BytesIO()
@@ -335,7 +350,7 @@ class RemarkableClient:
 
                 # Download the file
                 try:
-                    file_content = self._get_file(file_hash)
+                    file_content = self._get_file(file_hash, file_id)
                     zf.writestr(file_id, file_content)
                 except Exception:
                     logger.warning(

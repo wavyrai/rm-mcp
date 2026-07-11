@@ -3857,5 +3857,73 @@ class TestNotebookPageCount:
         assert "16 page(s)" in data["_error"]["message"]
 
 
+# =============================================================================
+# Cloud client: rm-filename header (required by the sync API since ~2026-05)
+# =============================================================================
+
+
+class TestCloudRmFilenameHeader:
+    """GET /sync/v3/files/{hash} requires an rm-filename header with the blob's
+    logical filename; without it the server returns HTTP 400
+    ({"message": "unexpected 'rm-filename' http header"})."""
+
+    def _client(self):
+        from rm_mcp.clients.cloud import RemarkableClient
+
+        return RemarkableClient(device_token="dev-token", user_token="user-token")
+
+    def test_get_file_sends_rm_filename_header(self):
+        client = self._client()
+        response = Mock(status_code=200, content=b"blob-data")
+        client._session.request = Mock(return_value=response)
+
+        result = client._get_file("abc123", "root.docSchema")
+
+        assert result == b"blob-data"
+        _, kwargs = client._session.request.call_args
+        assert kwargs["headers"]["rm-filename"] == "root.docSchema"
+        assert kwargs["headers"]["Authorization"] == "Bearer user-token"
+
+    def test_rm_filename_header_survives_token_renewal_retry(self):
+        client = self._client()
+        unauthorized = Mock(status_code=401)
+        ok = Mock(status_code=200, content=b"blob-data")
+        client._session.request = Mock(side_effect=[unauthorized, ok])
+        client.renew_token = Mock(side_effect=lambda: setattr(client, "user_token", "fresh-token"))
+
+        result = client._get_file("abc123", "doc-id.docSchema")
+
+        assert result == b"blob-data"
+        assert client._session.request.call_count == 2
+        _, retry_kwargs = client._session.request.call_args_list[1]
+        assert retry_kwargs["headers"]["rm-filename"] == "doc-id.docSchema"
+        assert retry_kwargs["headers"]["Authorization"] == "Bearer fresh-token"
+
+    def test_logical_filenames_used_for_root_index_and_metadata(self):
+        """get_meta_items must request root.docSchema for the root index,
+        <id>.docSchema for document indexes, and the entry's real filename
+        for content blobs."""
+        client = self._client()
+        requested = []
+
+        def fake_get_file(file_hash, filename):
+            requested.append((file_hash, filename))
+            if filename == "root.docSchema":
+                return b"3\nhash-doc1:80000000:doc-1:2:100\n"
+            if filename == "doc-1.docSchema":
+                return b"3\nhash-meta:0:doc-1.metadata:0:50\n"
+            if filename == "doc-1.metadata":
+                return json.dumps({"visibleName": "Test Doc", "type": "DocumentType"}).encode()
+            raise AssertionError(f"unexpected filename: {filename}")
+
+        client._get_file = fake_get_file
+        docs = client.get_meta_items(root_hash="root-hash-123")
+
+        assert [d.id for d in docs] == ["doc-1"]
+        assert ("root-hash-123", "root.docSchema") in requested
+        assert ("hash-doc1", "doc-1.docSchema") in requested
+        assert ("hash-meta", "doc-1.metadata") in requested
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
