@@ -111,7 +111,12 @@ remarkable_read("/Work/Projects/Q4 Planning")
 - **Grep auto-redirect**: When `grep` finds no match on the current page, it automatically redirects to the first matching page instead of returning an error. The response includes `grep_redirected_from` showing the original page.
 - **Auto-OCR**: If a notebook has no typed text, OCR is automatically enabled (opt out with `auto_ocr=False`). Notified via `_ocr_auto_enabled: true`.
 - **Fuzzy matching**: If the exact document isn't found, similar names are suggested.
-- **Path resolution**: Works with document names or full paths.
+- **Path resolution**: Works with document names or full paths. When two documents share a name, the response lists their full paths (`ambiguous_document`) instead of picking one.
+
+### What gets returned
+
+- **PDF/EPUB**: The document's own text, followed by your highlights and annotations under an `=== Annotations ===` heading. Use `content_type="annotations"` for just your own marks.
+- **Notebooks**: Typed text (Type Folio or on-screen keyboard), plus handwriting once OCR runs.
 
 ### Pagination
 
@@ -183,7 +188,7 @@ To search by document name, use `remarkable_search()` instead.
 |-----------|------|---------|-------------|
 | `query` | string | *required* | Search term for document names and indexed content |
 | `grep` | string | `None` | Regex pattern to search within content |
-| `limit` | int | `5` | Maximum documents to return (max: 5) |
+| `limit` | int | `5` | Maximum documents to return (max: 10) |
 | `include_ocr` | bool | `False` | Enable OCR for handwritten content |
 | `compact_output` | bool | `False` | Omit hints to reduce token usage |
 
@@ -205,6 +210,8 @@ remarkable_search("journal", grep="project idea", include_ocr=True)
 - **Without `grep`**: Returns metadata only (name, path, file_type, modified). No cloud downloads — fast.
 - **With `grep`**: Searches document content for the pattern. Uses the local index when available, falls back to cloud download on cache miss.
 - **Full-text search**: Reading a document via `remarkable_read` indexes its content for future search queries.
+- **Scope**: Content matches are checked against the live library, so results never include documents that were deleted or that fall outside `REMARKABLE_ROOT_PATH`.
+- **Limits**: A `limit` above the maximum is reduced, and the reduction is reported in `_warnings` rather than applied silently.
 
 ### Response Format
 

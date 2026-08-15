@@ -22,32 +22,27 @@ API keys or services.
 """
 
 import base64
-from typing import TYPE_CHECKING, List, Optional
+import logging
+from typing import TYPE_CHECKING, Optional
 
 from mcp.types import ImageContent, ModelHint, ModelPreferences, SamplingMessage, TextContent
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import Context
 
+logger = logging.getLogger(__name__)
 
-# Model preferences for OCR tasks - prioritize intelligence for better vision/OCR
-# Hints are matched as substrings, ordered by preference for vision capabilities
+
+# Model preferences for OCR tasks - prioritize intelligence for better vision/OCR.
+# Hints are matched as substrings and are advisory: a client is free to ignore
+# them, and the priorities below are what decide the outcome when none match.
+# Keep this list short and current rather than exhaustive — a long list of
+# superseded model names matches nothing and only looks authoritative.
 OCR_MODEL_PREFERENCES = ModelPreferences(
     hints=[
-        # Top tier - best vision/OCR capabilities
-        ModelHint(name="claude-opus-4.5"),
-        ModelHint(name="claude-sonnet-4.5"),
-        ModelHint(name="gemini-3-pro"),
-        ModelHint(name="gpt-5.1"),
-        # Second tier - very capable
-        ModelHint(name="claude-opus-4"),
-        ModelHint(name="gpt-5"),
-        ModelHint(name="gemini-2.5-pro"),
-        ModelHint(name="claude-sonnet-4"),
-        # Third tier - good fallbacks
-        ModelHint(name="gpt-4o"),
-        ModelHint(name="claude-3-5-sonnet"),
-        ModelHint(name="gemini-1.5-pro"),
+        ModelHint(name="claude-opus-5"),
+        ModelHint(name="claude-sonnet-5"),
+        ModelHint(name="claude"),
     ],
     intelligencePriority=1.0,  # Maximize intelligence for OCR accuracy
     speedPriority=0.2,  # Speed is not critical for OCR
@@ -153,45 +148,12 @@ async def ocr_via_sampling(
         return None
 
     except Exception:
-        # Sampling may fail for various reasons: client doesn't support sampling,
-        # session is not available, model doesn't support vision, network issues, etc.
-        # We intentionally swallow all exceptions and return None.
+        # Sampling may fail for various reasons: the client doesn't support it,
+        # the session is gone, the model has no vision, the network dropped.
+        # None means "no text this time" to the caller, but the reason belongs
+        # in the log — a silent OCR failure looks identical to a blank page.
+        logger.warning("Sampling OCR request failed", exc_info=True)
         return None
-
-
-async def ocr_pages_via_sampling(
-    ctx: "Context",
-    png_data_list: List[bytes],
-    max_tokens: int = 2000,
-) -> Optional[List[str]]:
-    """
-    Perform OCR on multiple pages using the client's LLM via MCP sampling.
-
-    Args:
-        ctx: The FastMCP Context object from a tool function
-        png_data_list: List of PNG image bytes to perform OCR on
-        max_tokens: Maximum tokens for each response (default: 2000)
-
-    Returns:
-        List of extracted text (one per page), or None if all pages failed
-    """
-    results = []
-    has_any_result = False
-
-    for png_data in png_data_list:
-        # Skip empty PNG data (failed renders) - just mark as empty string
-        if not png_data:
-            results.append("")
-            continue
-
-        text = await ocr_via_sampling(ctx, png_data, max_tokens)
-        if text:
-            results.append(text)
-            has_any_result = True
-        else:
-            results.append("")  # Empty string for failed pages
-
-    return results if has_any_result else None
 
 
 def get_ocr_backend() -> str:

@@ -58,7 +58,10 @@ class RemarkableMCP(FastMCP):
 
 def _build_instructions() -> str:
     """Build server instructions based on current configuration."""
-    return """# reMarkable MCP Server
+    from rm_mcp.ocr.sampling import get_ocr_backend
+    from rm_mcp.paths import _get_root_path
+
+    base = """# reMarkable MCP Server
 
 Access documents from your reMarkable tablet. All operations are read-only.
 
@@ -79,6 +82,10 @@ Access documents from your reMarkable tablet. All operations are read-only.
 3. Use `remarkable_read("Document", pages="all")` to get complete content in one call
 4. Use `remarkable_read("Document", grep="pattern")` to search within a document
 
+Documents are addressed by name, or by full path when two share a name.
+PDFs and EPUBs return the document's own text plus your annotations;
+notebooks return typed text, and handwriting once OCR runs.
+
 ### Getting Page Images
 Use `remarkable_image` when you need visual context:
 - Hand-drawn diagrams, sketches, or UI mockups
@@ -96,13 +103,40 @@ Use `remarkable_image` when you need visual context:
 Documents are registered as resources for direct access:
 - `remarkable:///{path}.txt` - Get full extracted text content in one request
 - `remarkableimg:///{path}.page-{N}.png` - Get PNG image of page N (notebooks only)
-
-## OCR (Sampling Mode Active)
-
-OCR is configured to use this client's AI model via MCP sampling.
-Use `remarkable_image("Document", include_ocr=True)` to extract text from images.
-This requires no external API keys - it uses your client's capabilities.
 """
+
+    backend = get_ocr_backend()
+    if backend == "sampling":
+        base += """
+## OCR
+
+Handwriting OCR uses this client's own AI model via MCP sampling, so it needs
+no external API keys — but only when the client supports sampling. If it does
+not, notebooks return their typed text and OCR is skipped.
+
+Use `remarkable_read("Document", include_ocr=True)` for text, or
+`remarkable_image("Document", include_ocr=True)` for a page image plus its text.
+OCR runs per page and is cached, so `pages="all"` transcribes every page.
+"""
+    else:
+        base += f"""
+## OCR
+
+Disabled: REMARKABLE_OCR_BACKEND is set to '{backend}', and 'sampling' is the
+only supported backend. Handwritten pages return no text; use
+`remarkable_image()` to look at them directly.
+"""
+
+    root = _get_root_path()
+    if root != "/":
+        base += f"""
+## Scope
+
+This server is restricted to the '{root}' folder. Paths in requests and
+responses are relative to it, and documents outside it are not accessible.
+"""
+
+    return base
 
 
 @asynccontextmanager

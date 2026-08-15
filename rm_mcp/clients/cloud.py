@@ -9,7 +9,6 @@ Based on the protocol used by ddvk/rmapi.
 
 import json
 import logging
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -20,12 +19,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from rm_mcp.config import env_int
 from rm_mcp.models import Document, Folder  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
 # Maximum number of parallel workers for fetching document metadata
-_PARALLEL_WORKERS = int(os.environ.get("REMARKABLE_PARALLEL_WORKERS", "5"))
+_PARALLEL_WORKERS = env_int("REMARKABLE_PARALLEL_WORKERS", 5, minimum=1)
 
 # API endpoints
 # Note: my.remarkable.com endpoints redirect to doesnotexist.remarkable.com
@@ -37,6 +37,17 @@ USER_TOKEN_URL = f"{AUTH_HOST}/token/json/2/user/new"
 SYNC_HOST = "https://internal.cloud.remarkable.com"
 ROOT_URL = f"{SYNC_HOST}/sync/v4/root"
 FILES_URL = f"{SYNC_HOST}/sync/v3/files"
+
+# Every blob fetch must name the file it is fetching. The API validates the
+# extension and rejects anything else with HTTP 400 "unexpected 'rm-filename'
+# http header" — including requests that omit the header entirely.
+RM_FILENAME_HEADER = "rm-filename"
+ROOT_INDEX_FILENAME = "root.docSchema"
+
+
+def _index_filename(doc_id: str) -> str:
+    """Filename under which a document's blob index is stored."""
+    return f"{doc_id}.docSchema"
 
 
 class RemarkableClient:
@@ -54,12 +65,16 @@ class RemarkableClient:
         retry_strategy = Retry(
             total=3,
             backoff_factor=0.5,
-            status_forcelist=[500, 502, 503, 504],
+            # 429 belongs here: without it a rate-limited library fails hard
+            # instead of backing off and succeeding.
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]),
+            respect_retry_after_header=True,
         )
         adapter = HTTPAdapter(
             max_retries=retry_strategy,
-            pool_connections=10,
-            pool_maxsize=10,
+            pool_connections=_PARALLEL_WORKERS * 2,
+            pool_maxsize=_PARALLEL_WORKERS * 2,
         )
         self._session.mount("https://", adapter)
         self._session.mount("http://", adapter)
@@ -84,51 +99,76 @@ class RemarkableClient:
             "Re-authenticate by running: uvx rm-mcp --setup"
         )
 
-    def _request(self, url: str, method: str = "GET") -> requests.Response:
+    def _request(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: Optional[Dict[str, str]] = None,
+    ) -> requests.Response:
         """Make an authenticated request using the pooled session."""
         if not self.user_token:
             self.renew_token()
 
-        headers = {"Authorization": f"Bearer {self.user_token}"}
-        response = self._session.request(method, url, headers=headers, timeout=60)
+        extra = dict(headers or {})
+        request_headers = {"Authorization": f"Bearer {self.user_token}", **extra}
+        response = self._session.request(method, url, headers=request_headers, timeout=60)
 
         if response.status_code == 401:
             # Token expired, try to renew (thread-safe)
             with self._token_lock:
                 # Re-check: another thread may have already renewed
                 current_auth = f"Bearer {self.user_token}"
-                if headers["Authorization"] == current_auth:
+                if request_headers["Authorization"] == current_auth:
                     self.renew_token()
-            headers = {"Authorization": f"Bearer {self.user_token}"}
-            response = self._session.request(method, url, headers=headers, timeout=60)
+            request_headers = {"Authorization": f"Bearer {self.user_token}", **extra}
+            response = self._session.request(method, url, headers=request_headers, timeout=60)
 
         return response
 
-    def _get_file(self, file_hash: str) -> bytes:
-        """Download a file by its hash."""
-        response = self._request(f"{FILES_URL}/{file_hash}")
+    def _get_file(self, file_hash: str, filename: str) -> bytes:
+        """Download a file by its hash.
+
+        Args:
+            file_hash: Content hash of the blob to fetch.
+            filename: Name the blob is stored under. The sync API requires an
+                `rm-filename` header carrying a name with a recognised
+                extension (``root.docSchema``, ``<uuid>.docSchema``,
+                ``<uuid>.metadata``, ...). Requests without it are rejected
+                with HTTP 400 regardless of the hash.
+        """
+        response = self._request(f"{FILES_URL}/{file_hash}", headers={RM_FILENAME_HEADER: filename})
         response.raise_for_status()
         return response.content
 
     def _parse_index(self, content: bytes) -> List[Dict[str, Any]]:
-        """Parse an index file into entries."""
+        """Parse an index file into entries.
+
+        Index files start with a schema version line. Schema 4 adds a summary
+        line describing the index itself (four fields) before the entries,
+        which have five.
+        """
         lines = content.decode("utf-8").strip().split("\n")
         entries = []
 
         # First line is schema version
         for line in lines[1:]:
+            if not line.strip():
+                continue
+            parts = line.split(":")
+            if len(parts) < 5:
+                # Schema 4 summary line, not an entry
+                logger.debug("Skipping non-entry index line: %s", line[:100])
+                continue
             try:
-                parts = line.split(":")
-                if len(parts) >= 5:
-                    entries.append(
-                        {
-                            "hash": parts[0],
-                            "type": parts[1],
-                            "id": parts[2],
-                            "subfiles": int(parts[3]),
-                            "size": int(parts[4]),
-                        }
-                    )
+                entries.append(
+                    {
+                        "hash": parts[0],
+                        "type": parts[1],
+                        "id": parts[2],
+                        "subfiles": int(parts[3]),
+                        "size": int(parts[4]),
+                    }
+                )
             except (ValueError, IndexError):
                 logger.warning("Skipping malformed index line: %s", line[:100])
 
@@ -183,10 +223,15 @@ class RemarkableClient:
 
         # Fetch the document's blob index
         try:
-            blob_content = self._get_file(doc_hash)
+            blob_content = self._get_file(doc_hash, _index_filename(doc_id))
             blob_entries = self._parse_index(blob_content)
         except Exception:
-            logger.debug("Failed to fetch blob index for document %s (hash=%s)", doc_id, doc_hash)
+            logger.debug(
+                "Failed to fetch blob index for document %s (hash=%s)",
+                doc_id,
+                doc_hash,
+                exc_info=True,
+            )
             return None
 
         # Find and fetch the metadata file
@@ -197,7 +242,7 @@ class RemarkableClient:
             files.append(blob_entry)
             if blob_entry["id"].endswith(".metadata"):
                 try:
-                    meta_content = self._get_file(blob_entry["hash"])
+                    meta_content = self._get_file(blob_entry["hash"], blob_entry["id"])
                     metadata = json.loads(meta_content.decode("utf-8"))
                 except Exception:
                     logger.warning(
@@ -279,7 +324,7 @@ class RemarkableClient:
 
         # Get root index
         try:
-            root_index = self._get_file(root_hash)
+            root_index = self._get_file(root_hash, ROOT_INDEX_FILENAME)
             entries = self._parse_index(root_index)
         except Exception as e:
             raise RuntimeError(f"Failed to parse root index (hash={root_hash}): {e}") from e
@@ -324,7 +369,7 @@ class RemarkableClient:
         import io
         import zipfile
 
-        blob_content = self._get_file(doc.hash)
+        blob_content = self._get_file(doc.hash, _index_filename(doc.id))
         blob_entries = self._parse_index(blob_content)
 
         zip_buffer = io.BytesIO()
@@ -335,7 +380,7 @@ class RemarkableClient:
 
                 # Download the file
                 try:
-                    file_content = self._get_file(file_hash)
+                    file_content = self._get_file(file_hash, file_id)
                     zf.writestr(file_id, file_content)
                 except Exception:
                     logger.warning(
@@ -415,9 +460,12 @@ def load_client_from_token(token_data: str) -> RemarkableClient:
     if token_data.startswith("eyJ"):
         return RemarkableClient(device_token=token_data, user_token="")
 
+    # Never echo the token itself — this message reaches logs and tool output.
     raise ValueError(
-        f"Invalid token format. Expected JSON or JWT token.\n"
-        f"Token starts with: {token_data[:20]}..."
+        "Invalid token format. Expected either a JSON object with a "
+        "'devicetoken' key, or a raw JWT device token.\n"
+        f"Got {len(token_data)} characters that match neither shape.\n"
+        "Re-authenticate by running: uvx rm-mcp --setup"
     )
 
 

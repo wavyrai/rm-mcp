@@ -130,6 +130,11 @@ def _find_document(document: str, collection, items_by_id: Dict[str, Any], root:
     target_doc = None
     document_lower = document.lower().strip("/")
 
+    # A full-path match is unambiguous and always wins over a bare-name match,
+    # which may hit several documents in different folders.
+    path_matches = []
+    name_matches = []
+
     for doc in documents:
         # Skip trashed documents
         if getattr(doc, "Parent", "") == "trash":
@@ -138,14 +143,29 @@ def _find_document(document: str, collection, items_by_id: Dict[str, Any], root:
         # Filter by root path
         if not _is_within_root(doc_path, root):
             continue
-        # Match by name (case-insensitive)
-        if doc.VissibleName.lower() == document_lower:
-            target_doc = doc
-            break
-        # Also try matching by full path (case-insensitive)
         if doc_path.lower().strip("/") == document_lower:
-            target_doc = doc
-            break
+            path_matches.append((doc, doc_path))
+        elif doc.VissibleName.lower() == document_lower:
+            name_matches.append((doc, doc_path))
+
+    if path_matches:
+        target_doc = path_matches[0][0]
+    elif len(name_matches) == 1:
+        target_doc = name_matches[0][0]
+    elif len(name_matches) > 1:
+        # Several documents share this name — picking one silently would read
+        # the wrong document, so ask for the full path instead.
+        paths = sorted(_apply_root_filter(p, root) for _doc, p in name_matches)
+        error = make_error(
+            error_type="ambiguous_document",
+            message=(
+                f"{len(name_matches)} documents are named '{document}'. "
+                "Use a full path to choose one."
+            ),
+            suggestion=f"For example: remarkable_read('{paths[0]}')",
+            did_you_mean=paths,
+        )
+        return None, error
 
     if not target_doc:
         # Find similar documents for suggestion (only within root)

@@ -9,6 +9,10 @@ from rm_mcp.tools import _helpers
 
 logger = logging.getLogger(__name__)
 
+# Searching is deliberately narrow: each result may cost a cloud download when
+# grep is used, and a wide result set crowds out the caller's context.
+MAX_SEARCH_RESULTS = 10
+
 
 @mcp.tool(annotations=_helpers.SEARCH_ANNOTATIONS)
 async def remarkable_search(
@@ -30,13 +34,13 @@ async def remarkable_search(
     The response includes index_coverage showing how many documents are searchable.
 
     Limits:
-    - Max 5 documents per search
+    - Max 10 documents per search
     - Use grep to search within document content
     </instructions>
     <parameters>
     - query: Search term for document names and previously-indexed content
     - grep: Optional regex pattern to search within document content
-    - limit: Max documents to return (default: 5, max: 5)
+    - limit: Max documents to return (default: 5, max: 10)
     - include_ocr: Enable OCR for handwritten content (default: False)
     </parameters>
     <examples>
@@ -48,13 +52,30 @@ async def remarkable_search(
     compact = _helpers.is_compact(compact_output)
     try:
         # Enforce limits
-        limit = min(max(1, limit), 5)
+        requested_limit = limit
+        limit = min(max(1, limit), MAX_SEARCH_RESULTS)
         warnings = []
+        if requested_limit > MAX_SEARCH_RESULTS:
+            warnings.append(
+                f"limit={requested_limit} was reduced to {MAX_SEARCH_RESULTS}, "
+                "the maximum for a single search."
+            )
 
         # Use cached collection directly — no JSON round-trip through browse/read
-        client, collection = _helpers.get_cached_collection()
+        client, collection = await _helpers.run_blocking(_helpers.get_cached_collection)
         items_by_id = _helpers.get_items_by_id(collection)
         root = _helpers._get_root_path()
+
+        # Documents currently visible under the configured root. The index can
+        # outlive a root-path change or a deletion, so hits are only trusted
+        # when the document is still visible here.
+        visible_ids = {
+            item.ID
+            for item in collection
+            if not item.is_folder
+            and not _helpers._is_cloud_archived(item)
+            and _helpers._is_within_root(_helpers.get_item_path(item, items_by_id), root)
+        }
 
         # ---- Phase 1: FTS5 content search (previously-indexed content) ----
         fts_results = []
@@ -64,13 +85,22 @@ async def remarkable_search(
 
             index = get_instance()
             if index is not None:
-                fts_hits = index.search(query, limit=limit)
+                # Over-fetch: hits outside the root are dropped below, and we
+                # still want a full page of results after filtering.
+                fts_hits = await _helpers.run_blocking(index.search, query, limit=limit * 4)
                 for hit in fts_hits:
+                    if hit["doc_id"] not in visible_ids:
+                        continue
+                    if len(fts_results) >= limit:
+                        break
+                    hit_path = hit.get("path") or ""
+                    if not _helpers._is_within_root(hit_path, root):
+                        continue
                     fts_doc_ids.add(hit["doc_id"])
                     fts_results.append(
                         {
                             "name": hit["name"],
-                            "path": hit["path"],
+                            "path": _helpers._apply_root_filter(hit_path),
                             "file_type": hit.get("file_type"),
                             "modified": hit.get("modified_at"),
                             "snippet": hit.get("snippet", ""),
@@ -85,17 +115,12 @@ async def remarkable_search(
         query_lower = query.lower()
         matching_docs = []
         for item in collection:
-            if item.is_folder:
-                continue
-            if _helpers._is_cloud_archived(item):
-                continue
-            item_path = _helpers.get_item_path(item, items_by_id)
-            if not _helpers._is_within_root(item_path, root):
+            if item.ID not in visible_ids:
                 continue
             if query_lower in item.VissibleName.lower():
                 # Skip if already found via FTS
                 if item.ID not in fts_doc_ids:
-                    matching_docs.append((item, item_path))
+                    matching_docs.append((item, _helpers.get_item_path(item, items_by_id)))
 
         # ---- Phase 3: No results at all ----
         if not fts_results and not matching_docs:
@@ -139,7 +164,7 @@ async def remarkable_search(
                 l2_content = None
                 if index is not None:
                     l2_content = index.get_content_snippet(
-                        doc.ID, max_chars=_helpers.MAX_OUTPUT_CHARS
+                        doc.ID, max_chars=_helpers.get_max_output_chars()
                     )
 
                 if l2_content:
@@ -196,16 +221,13 @@ async def remarkable_search(
         if index is not None:
             try:
                 indexed_count = index.get_indexed_document_count()
-                total_docs = sum(
-                    1
-                    for item in collection
-                    if not item.is_folder
-                    and not _helpers._is_cloud_archived(item)
-                    and _helpers._is_within_root(_helpers.get_item_path(item, items_by_id), root)
-                )
-                index_coverage = {"indexed": indexed_count, "total": total_docs}
+                total_docs = len(visible_ids)
+                index_coverage = {
+                    "indexed": min(indexed_count, total_docs),
+                    "total": total_docs,
+                }
             except Exception:
-                pass
+                logger.debug("Could not compute index coverage", exc_info=True)
 
         result = {
             "query": query,

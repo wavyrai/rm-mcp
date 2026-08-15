@@ -31,7 +31,10 @@ class Document:
     last_modified: Optional[datetime] = None
     size: int = 0
     files: List[Dict[str, Any]] = field(default_factory=list)
-    synced: bool = True  # False means cloud-archived (not on device)
+    # False means the document is archived to the cloud and cannot be
+    # downloaded. The sync API does not currently report this, so it stays
+    # True and `is_cloud_archived` rests on the trash check below.
+    synced: bool = True
 
     @property
     def is_folder(self) -> bool:

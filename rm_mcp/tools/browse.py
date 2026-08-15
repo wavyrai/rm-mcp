@@ -31,7 +31,7 @@ async def remarkable_browse(path: str = "/", compact_output: bool = False) -> st
     """
     compact = _helpers.is_compact(compact_output)
     try:
-        client, collection = _helpers.get_cached_collection()
+        client, collection = await _helpers.run_blocking(_helpers.get_cached_collection)
         items_by_id = _helpers.get_items_by_id(collection)
         items_by_parent = _helpers.get_items_by_parent(collection)
 

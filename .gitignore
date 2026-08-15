@@ -77,3 +77,8 @@ Thumbs.db
 RESEARCH_NOTES.md
 BLOG_DRAFT.md
 .mcpregistry_*
+
+# reMarkable auth tokens — normally in ~/.rmapi, but never commit a local copy
+.rmapi
+*.rmapi
+rm_page*.png

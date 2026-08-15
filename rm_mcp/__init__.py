@@ -15,7 +15,12 @@ from rm_mcp.capabilities import (
     get_protocol_version,
 )
 
-__version__ = "0.1.0"
+try:  # Single source of truth is pyproject.toml, patched at release time.
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("rm-mcp")
+except Exception:  # Running from a source checkout without an install
+    __version__ = "dev"
 
 
 def get_mcp():

@@ -1217,14 +1217,12 @@ class TestSamplingOCR:
             OCR_SYSTEM_PROMPT,
             OCR_USER_PROMPT,
             get_ocr_backend,
-            ocr_pages_via_sampling,
             ocr_via_sampling,
             should_use_sampling_ocr,
         )
 
         # Verify all functions/constants are accessible
         assert callable(ocr_via_sampling)
-        assert callable(ocr_pages_via_sampling)
         assert callable(get_ocr_backend)
         assert callable(should_use_sampling_ocr)
         assert isinstance(OCR_SYSTEM_PROMPT, str)
@@ -1478,7 +1476,11 @@ class TestRemarkableImageExtended:
     @patch(_PATCH_CACHED)
     async def test_image_cache_hit(self, mock_get_cached):
         """Test that remarkable_image returns cached image when available."""
-        from rm_mcp.tools._helpers import _rendered_image_cache
+        from rm_mcp.tools._helpers import (
+            _rendered_image_cache,
+            get_background_color,
+            render_cache_key,
+        )
 
         mock_client = Mock()
 
@@ -1501,8 +1503,10 @@ class TestRemarkableImageExtended:
             zf.writestr("doc-cached/page-id-1.rm", b"dummy rm data")
         mock_client.download.return_value = zip_buffer.getvalue()
 
-        # Pre-populate the image cache
-        cache_key = f"{doc.ID}:1"
+        # Pre-populate the image cache. The key covers document version,
+        # page, format and background so variants never collide.
+        doc.hash = "doc-hash-1"
+        cache_key = render_cache_key(doc, 1, "png", get_background_color())
         fake_base64 = "aVZCT1J3MEtHZ29BQQ=="  # fake base64 PNG data
         _rendered_image_cache[cache_key] = fake_base64
 
@@ -1994,12 +1998,14 @@ class TestRemarkableSearch:
     @pytest.mark.asyncio
     @patch(_PATCH_CACHED)
     async def test_search_limit_clamped(self, mock_get_cached):
-        """Test that search limit is clamped to max of 5."""
+        """Test that search limit is clamped to MAX_SEARCH_RESULTS."""
+        from rm_mcp.tools.search import MAX_SEARCH_RESULTS
+
         mock_client = Mock()
 
-        # Create 7 documents matching the query
+        # Create more documents than the cap allows
         docs = []
-        for i in range(7):
+        for i in range(MAX_SEARCH_RESULTS + 5):
             doc = Mock()
             doc.VissibleName = f"Note {i}"
             doc.ID = f"doc-{i}"
@@ -2011,11 +2017,13 @@ class TestRemarkableSearch:
 
         mock_get_cached.return_value = (mock_client, docs)
 
-        result = await mcp.call_tool("remarkable_search", {"query": "Note", "limit": 10})
+        over_limit = MAX_SEARCH_RESULTS + 5
+        result = await mcp.call_tool("remarkable_search", {"query": "Note", "limit": over_limit})
         data = json.loads(result[0][0].text)
 
-        # Even though limit=10 was passed, max is 5
-        assert data["count"] <= 5
+        assert data["count"] <= MAX_SEARCH_RESULTS
+        # The reduction is reported rather than applied silently
+        assert any(str(MAX_SEARCH_RESULTS) in w for w in data["_warnings"])
 
 
 # =============================================================================
@@ -2649,7 +2657,18 @@ class TestSearchWithFTS:
             doc.is_folder = False
             doc.is_cloud_archived = False
             doc.ModifiedClient = "2024-06-01T00:00:00Z"
-            mock_get_cached.return_value = (mock_client, [doc])
+
+            # The indexed document must still be in the library to be returned:
+            # content search never surfaces documents the caller cannot browse.
+            indexed_doc = Mock()
+            indexed_doc.VissibleName = "Old Journal"
+            indexed_doc.ID = "doc-indexed"
+            indexed_doc.Parent = ""
+            indexed_doc.is_folder = False
+            indexed_doc.is_cloud_archived = False
+            indexed_doc.ModifiedClient = "2024-05-01T00:00:00Z"
+
+            mock_get_cached.return_value = (mock_client, [doc, indexed_doc])
 
             mock_read.return_value = json.dumps(
                 {
@@ -2700,7 +2719,16 @@ class TestSearchWithFTS:
             )
 
             mock_client = Mock()
-            mock_get_cached.return_value = (mock_client, [])
+            # Present in the library, but its name does not match the query —
+            # only its indexed content does.
+            doc = Mock()
+            doc.VissibleName = "Random Name"
+            doc.ID = "doc-1"
+            doc.Parent = ""
+            doc.is_folder = False
+            doc.is_cloud_archived = False
+            doc.ModifiedClient = "2024-01-01T00:00:00Z"
+            mock_get_cached.return_value = (mock_client, [doc])
 
             result = await mcp.call_tool("remarkable_search", {"query": "photosynthesis"})
             data = json.loads(result[0][0].text)

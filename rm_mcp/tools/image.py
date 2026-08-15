@@ -80,7 +80,17 @@ async def remarkable_image(
         if background is None:
             background = _helpers.get_background_color()
 
-        client, collection = _helpers.get_cached_collection()
+        # Validate format parameter before doing any work
+        format_lower = output_format.lower()
+        if format_lower not in ("png", "svg"):
+            return _helpers.make_error(
+                error_type="invalid_format",
+                message=f"Invalid format: '{output_format}'. Supported formats: png, svg",
+                suggestion="Use output_format='png' for raster or 'svg' for vectors.",
+                compact=compact,
+            )
+
+        client, collection = await _helpers.run_blocking(_helpers.get_cached_collection)
         items_by_id = _helpers.get_items_by_id(collection)
 
         root = _helpers._get_root_path()
@@ -98,20 +108,10 @@ async def remarkable_image(
             return doc_path  # doc_path contains the error JSON
 
         # Download the document
-        raw_doc = client.download(target_doc)
-        with _helpers._temp_document(raw_doc) as tmp_path:
-            # Validate format parameter
-            format_lower = output_format.lower()
-            if format_lower not in ("png", "svg"):
-                return _helpers.make_error(
-                    error_type="invalid_format",
-                    message=f"Invalid format: '{output_format}'. Supported formats: png, svg",
-                    suggestion="Use output_format='png' for raster or 'svg' for vectors.",
-                    compact=compact,
-                )
-
+        async with _helpers.open_document(client, target_doc) as tmp_path:
             # Get total page count
-            total_pages = _helpers.get_document_page_count(tmp_path)
+            total_pages = await _helpers.run_blocking(_helpers.get_document_page_count, tmp_path)
+            _helpers.record_page_count(target_doc.ID, total_pages)
 
             if total_pages == 0:
                 return _helpers.make_error(
@@ -138,8 +138,11 @@ async def remarkable_image(
 
             # Render the page based on format
             if format_lower == "svg":
-                svg_content = _helpers.render_page_from_document_zip_svg(
-                    tmp_path, page, background_color=background
+                svg_content = await _helpers.run_blocking(
+                    _helpers.render_page_from_document_zip_svg,
+                    tmp_path,
+                    page,
+                    background_color=background,
                 )
 
                 if svg_content is None:
@@ -184,10 +187,13 @@ async def remarkable_image(
                     )
                     return [info, embedded]
             else:
-                # PNG format — check cache first
-                cache_key = f"{target_doc.ID}:{page}"
-                if cache_key in _helpers._rendered_image_cache and not include_ocr:
-                    png_base64 = _helpers._rendered_image_cache[cache_key]
+                # PNG format — check cache first. The key covers the document
+                # version, page, format and background, so a different
+                # background never serves another variant's render.
+                cache_key = _helpers.render_cache_key(target_doc, page, "png", background)
+                cached_png = None if include_ocr else _helpers.get_rendered_image(cache_key)
+                if cached_png is not None:
+                    png_base64 = cached_png
                     resource_uri = f"remarkableimg:///{uri_path}.page-{page}.png"
                     if compatibility:
                         data_uri = f"data:image/png;base64,{png_base64}"
@@ -216,8 +222,11 @@ async def remarkable_image(
                         )
                         return [info, image]
 
-                png_data = _helpers.render_page_from_document_zip(
-                    tmp_path, page, background_color=background
+                png_data = await _helpers.run_blocking(
+                    _helpers.render_page_from_document_zip,
+                    tmp_path,
+                    page,
+                    background_color=background,
                 )
 
                 if png_data is None:
@@ -255,10 +264,8 @@ async def remarkable_image(
                 resource_uri = f"remarkableimg:///{uri_path}.page-{page}.png"
                 png_base64 = base64.b64encode(png_data).decode("utf-8")
 
-                # Cache the rendered image (evict if cache is too large)
-                if len(_helpers._rendered_image_cache) >= 20:
-                    _helpers._rendered_image_cache.clear()
-                _helpers._rendered_image_cache[cache_key] = png_base64
+                # Cache the rendered image (LRU, bounded by total bytes)
+                _helpers.put_rendered_image(cache_key, png_base64)
 
                 # Build OCR info for response if OCR was requested
                 ocr_info = {}

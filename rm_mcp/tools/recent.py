@@ -1,11 +1,42 @@
 """remarkable_recent tool — get recently modified documents."""
 
+from datetime import datetime, timezone
+
 from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
 
+# Documents whose metadata carries no modification time sort last rather than
+# blowing up the comparison against the documents that do have one.
+_NO_TIMESTAMP = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _modified_sort_key(doc) -> datetime:
+    """Sort key that is always a comparable, timezone-aware datetime.
+
+    Documents whose metadata omits a modification time, or carries one that
+    cannot be parsed, sort last instead of raising when compared against the
+    documents that do have one.
+    """
+    modified = getattr(doc, "ModifiedClient", None)
+    if modified is None:
+        return _NO_TIMESTAMP
+
+    if isinstance(modified, str):
+        try:
+            modified = datetime.fromisoformat(modified.replace("Z", "+00:00"))
+        except ValueError:
+            return _NO_TIMESTAMP
+
+    if not isinstance(modified, datetime):
+        return _NO_TIMESTAMP
+
+    if modified.tzinfo is None:
+        return modified.replace(tzinfo=timezone.utc)
+    return modified
+
 
 @mcp.tool(annotations=_helpers.RECENT_ANNOTATIONS)
-def remarkable_recent(
+async def remarkable_recent(
     limit: int = 10, include_preview: bool = False, compact_output: bool = False
 ) -> str:
     """
@@ -31,7 +62,7 @@ def remarkable_recent(
     """
     compact = _helpers.is_compact(compact_output)
     try:
-        client, collection = _helpers.get_cached_collection()
+        client, collection = await _helpers.run_blocking(_helpers.get_cached_collection)
         items_by_id = _helpers.get_items_by_id(collection)
 
         # Clamp limit - lower max when previews enabled (expensive operation)
@@ -50,12 +81,7 @@ def remarkable_recent(
                 continue
             documents.append(item)
 
-        documents.sort(
-            key=lambda x: (
-                x.ModifiedClient if hasattr(x, "ModifiedClient") and x.ModifiedClient else ""
-            ),
-            reverse=True,
-        )
+        documents.sort(key=_modified_sort_key, reverse=True)
 
         results = []
         for doc in documents[:limit]:
@@ -91,19 +117,20 @@ def remarkable_recent(
                 else:
                     # PDFs and EPUBs have extractable text - fall back to cloud download
                     try:
-                        raw_doc = client.download(doc)
-                        with _helpers._temp_document(raw_doc) as tmp_path:
-                            content = _helpers.extract_text_from_document_zip(
-                                tmp_path, include_ocr=False, doc_id=doc.ID
-                            )
-                            preview_text = "\n".join(content["typed_text"])[:200]
-                            if preview_text:
-                                if len(preview_text) == 200:
-                                    doc_info["preview"] = preview_text + "..."
-                                else:
-                                    doc_info["preview"] = preview_text
+                        content = await _helpers.extract_document(client, doc, include_ocr=False)
+                        preview_source = "\n".join(content["typed_text"]) or content.get(
+                            "source_text", ""
+                        )
+                        preview_text = preview_source[:200]
+                        if preview_text:
+                            if len(preview_source) > 200:
+                                doc_info["preview"] = preview_text + "..."
+                            else:
+                                doc_info["preview"] = preview_text
                     except Exception:
-                        pass
+                        _helpers.logger.debug(
+                            "Preview extraction failed for %s", doc.ID, exc_info=True
+                        )
 
             results.append(doc_info)
 

@@ -57,13 +57,14 @@ async def remarkable_read(
     """
     compact = _helpers.is_compact(compact_output)
     try:
-        client, collection = _helpers.get_cached_collection()
+        client, collection = await _helpers.run_blocking(_helpers.get_cached_collection)
         items_by_id = _helpers.get_items_by_id(collection)
 
         # Validate parameters
         page = max(1, page)
         # Internal page size for PDF/EPUB character-based pagination
-        page_size = _helpers.DEFAULT_PAGE_SIZE
+        page_size = _helpers.get_page_size()
+        max_output_chars = _helpers.get_max_output_chars()
 
         root = _helpers._get_root_path()
         # Resolve user-provided path to actual device path
@@ -88,6 +89,10 @@ async def remarkable_read(
         ocr_backend_used = None  # Track which OCR backend was used
         content = None  # Will hold extraction result
         total_notebook_pages = 0  # Track total pages for sampling mode
+        # Which page numbers hold real OCR output. None means "all of them";
+        # a set means the other pages were never sent to the OCR model and so
+        # are blank for reasons that have nothing to do with their content.
+        ocr_pages_covered = None
 
         if content_type in ("text", "annotations"):
             # For notebooks (no PDF/EPUB), use page-based pagination
@@ -98,72 +103,84 @@ async def remarkable_read(
                 is_notebook and include_ocr and ctx and _helpers.should_use_sampling_ocr(ctx)
             )
 
-            # For sampling OCR: use per-page caching and only OCR requested page
+            # For sampling OCR: OCR only the pages actually being returned,
+            # serving whatever is already in the per-page cache.
             if use_sampling:
-                # Check per-page cache first
-                cached_text = _helpers.get_cached_page_ocr(target_doc.ID, page, "sampling")
-                if cached_text is not None:
-                    # We have cached OCR for this page
-                    # Still need to get total page count
-                    raw_doc = client.download(target_doc)
-                    with _helpers._temp_document(raw_doc) as tmp_path:
-                        total_notebook_pages = _helpers.get_document_page_count(tmp_path)
+                async with _helpers.open_document(client, target_doc) as tmp_path:
+                    total_notebook_pages = await _helpers.run_blocking(
+                        _helpers.get_document_page_count, tmp_path
+                    )
+                    _helpers.record_page_count(target_doc.ID, total_notebook_pages)
 
-                    # Build notebook_pages list with just the cached page
-                    notebook_pages = [""] * total_notebook_pages
-                    notebook_pages[page - 1] = cached_text
-                    ocr_backend_used = "sampling"
-                else:
-                    # No cache - render and OCR just the requested page
-                    raw_doc = client.download(target_doc)
-                    with _helpers._temp_document(raw_doc) as tmp_path:
-                        total_notebook_pages = _helpers.get_document_page_count(tmp_path)
+                    if total_notebook_pages and page > total_notebook_pages and pages is None:
+                        return _helpers.make_error(
+                            error_type="page_out_of_range",
+                            message=f"Page {page} does not exist. "
+                            f"Document has {total_notebook_pages} notebook page(s).",
+                            suggestion=f"Use page=1 to {total_notebook_pages} "
+                            "to read different pages.",
+                            compact=compact,
+                        )
 
-                        if page > total_notebook_pages:
-                            return _helpers.make_error(
-                                error_type="page_out_of_range",
-                                message=f"Page {page} does not exist. "
-                                f"Document has {total_notebook_pages} notebook page(s).",
-                                suggestion=f"Use page=1 to {total_notebook_pages} "
-                                "to read different pages.",
-                                compact=compact,
+                    # Which pages does this call actually need? Only those get
+                    # sent to the client's model — OCR is the expensive step.
+                    if pages is not None:
+                        wanted = _helpers.parse_pages(pages, total_notebook_pages)
+                    else:
+                        wanted = [page]
+
+                    ocr_pages = [""] * total_notebook_pages
+                    got_any = False
+                    for target_page in wanted:
+                        cached_text = _helpers.get_cached_page_ocr(
+                            target_doc.ID, target_page, "sampling"
+                        )
+                        if cached_text is not None:
+                            ocr_pages[target_page - 1] = cached_text
+                            got_any = True
+                            continue
+
+                        png_data = await _helpers.run_blocking(
+                            _helpers.render_page_from_document_zip, tmp_path, target_page
+                        )
+                        if not png_data:
+                            continue
+                        ocr_text = await _helpers.ocr_via_sampling(ctx, png_data)
+                        if ocr_text:
+                            _helpers.cache_page_ocr(
+                                target_doc.ID, target_page, "sampling", ocr_text
                             )
+                            ocr_pages[target_page - 1] = ocr_text
+                            got_any = True
 
-                        # Render just the requested page
-                        png_data = _helpers.render_page_from_document_zip(tmp_path, page)
-                        if png_data:
-                            # OCR the single page
-                            ocr_text = await _helpers.ocr_via_sampling(ctx, png_data)
-                            if ocr_text:
-                                # Cache the result
-                                _helpers.cache_page_ocr(target_doc.ID, page, "sampling", ocr_text)
-                                # Build notebook_pages list
-                                notebook_pages = [""] * total_notebook_pages
-                                notebook_pages[page - 1] = ocr_text
-                                ocr_backend_used = "sampling"
+                    if got_any:
+                        notebook_pages = ocr_pages
+                        ocr_backend_used = "sampling"
+                        ocr_pages_covered = set(wanted)
 
             # If not using sampling OCR, perform standard extraction
             if not notebook_pages and is_notebook:
-                raw_doc = client.download(target_doc)
-                with _helpers._temp_document(raw_doc) as tmp_path:
-                    content = _helpers.extract_text_from_document_zip(
-                        tmp_path, include_ocr=include_ocr, doc_id=target_doc.ID
-                    )
-                    if content.get("pages"):
-                        total_notebook_pages = content["pages"]
-                    if content.get("handwritten_text"):
-                        notebook_pages = content["handwritten_text"]
-                        ocr_backend_used = content.get("ocr_backend")
+                content = await _helpers.extract_document(
+                    client, target_doc, include_ocr=include_ocr
+                )
+                if content.get("pages"):
+                    total_notebook_pages = content["pages"]
+                if content.get("handwritten_text"):
+                    notebook_pages = content["handwritten_text"]
+                    ocr_backend_used = content.get("ocr_backend")
+                    ocr_pages_covered = None
 
             # For non-notebooks or when no OCR pages, build annotation sections
             if not (is_notebook and notebook_pages):
                 if content is None:
                     # Need to extract if we haven't already
-                    raw_doc = client.download(target_doc)
-                    with _helpers._temp_document(raw_doc) as tmp_path:
-                        content = _helpers.extract_text_from_document_zip(
-                            tmp_path, include_ocr=include_ocr, doc_id=target_doc.ID
-                        )
+                    content = await _helpers.extract_document(
+                        client, target_doc, include_ocr=include_ocr
+                    )
+
+                # The underlying PDF/EPUB text comes first; annotations follow.
+                if content_type == "text" and content.get("source_text"):
+                    text_parts.append(content["source_text"])
 
                 # Add annotations section
                 annotation_parts = []
@@ -204,9 +221,9 @@ async def remarkable_read(
                     pg_content = notebook_pages[p - 1]
                     separator = f"--- Page {p} ---\n"
                     chunk = separator + pg_content
-                    if total_len + len(chunk) > _helpers.MAX_OUTPUT_CHARS:
+                    if total_len + len(chunk) > max_output_chars:
                         truncated = True
-                        remaining = _helpers.MAX_OUTPUT_CHARS - total_len
+                        remaining = max_output_chars - total_len
                         if remaining > len(separator):
                             parts.append(separator + pg_content[: remaining - len(separator)])
                             returned_pages.append(p)
@@ -289,9 +306,13 @@ async def remarkable_read(
                 try:
                     pattern = re.compile(grep, re.IGNORECASE | re.MULTILINE)
                     if not pattern.search(page_content):
-                        # No match on this page — auto-redirect to first matching page
+                        # No match on this page — auto-redirect to first matching page.
+                        # Only pages with real content can be searched; with
+                        # per-page OCR the rest were never transcribed.
                         matching_pages = []
                         for i, pg in enumerate(notebook_pages, 1):
+                            if ocr_pages_covered is not None and i not in ocr_pages_covered:
+                                continue
                             if pattern.search(pg):
                                 matching_pages.append(i)
                         if matching_pages:
@@ -300,6 +321,21 @@ async def remarkable_read(
                             page = matching_pages[0]
                             page_content = notebook_pages[page - 1]
                             has_more = page < total_pages
+                        elif ocr_pages_covered is not None:
+                            searched = ", ".join(str(p) for p in sorted(ocr_pages_covered))
+                            return _helpers.make_error(
+                                error_type="no_grep_matches",
+                                message=(
+                                    f"No matches for '{grep}' on the page(s) read so far "
+                                    f"({searched}) of {total_pages}."
+                                ),
+                                suggestion=(
+                                    "Handwriting is transcribed one page at a time. "
+                                    f"Use pages='all' to transcribe and search every page, "
+                                    f"or pages='1-{total_pages}' for a range."
+                                ),
+                                compact=compact,
+                            )
                         else:
                             return _helpers.make_error(
                                 error_type="no_grep_matches",
@@ -363,8 +399,8 @@ async def remarkable_read(
         if pages is not None and total_chars > 0:
             # pages="all" returns full text; page ranges don't apply to PDFs
             content = full_text
-            if len(content) > _helpers.MAX_OUTPUT_CHARS:
-                content = content[: _helpers.MAX_OUTPUT_CHARS]
+            if len(content) > max_output_chars:
+                content = content[:max_output_chars]
                 truncated = True
             else:
                 truncated = False
@@ -463,12 +499,15 @@ async def remarkable_read(
                 document=document,
                 content_type=content_type,
                 page=page,
+                pages=pages,
                 grep=grep,
                 include_ocr=True,  # Enable OCR automatically
+                auto_ocr=False,  # Already retrying; never recurse again
                 ctx=ctx,
+                compact_output=compact_output,
             )
             result_data = json.loads(ocr_result)
-            if "_error" not in result_data:
+            if "_error" not in result_data and not compact:
                 result_data["_ocr_auto_enabled"] = True
                 result_data["_hint"] = (
                     "OCR auto-enabled (notebook had no typed text). " + result_data.get("_hint", "")

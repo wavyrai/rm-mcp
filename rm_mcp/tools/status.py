@@ -5,7 +5,7 @@ from rm_mcp.tools import _helpers
 
 
 @mcp.tool(annotations=_helpers.STATUS_ANNOTATIONS)
-def remarkable_status(compact_output: bool = False) -> str:
+async def remarkable_status(compact_output: bool = False) -> str:
     """
     <usecase>Check connection status and authentication with reMarkable Cloud.</usecase>
     <instructions>
@@ -23,7 +23,7 @@ def remarkable_status(compact_output: bool = False) -> str:
     connection_info = "environment variable" if _helpers.REMARKABLE_TOKEN else "file (~/.rmapi)"
 
     try:
-        client, collection = _helpers.get_cached_collection()
+        client, collection = await _helpers.run_blocking(_helpers.get_cached_collection)
         items_by_id = _helpers.get_items_by_id(collection)
 
         root = _helpers._get_root_path()

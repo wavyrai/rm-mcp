@@ -16,6 +16,7 @@ rm_mcp/                   # Main package
   server.py               # FastMCP server subclass & initialization
   cli.py                  # CLI (--setup, --register, or start server)
   api.py                  # Singleton reMarkable Cloud client
+  config.py               # Tolerant env var parsing (env_int/env_bool)
   models.py               # Document/Folder dataclasses
   paths.py                # Path utilities & root path filtering
   index.py                # SQLite FTS5 full-text search index
@@ -31,7 +32,8 @@ rm_mcp/                   # Main package
     sampling.py           # Uses client LLM via MCP sampling (only backend)
   clients/
     cloud.py              # reMarkable Cloud API v3/v4 client
-test_server.py            # Test suite (pytest + pytest-asyncio)
+test_server.py            # Unit tests — mocked client, response shapes
+test_integration.py       # Integration tests — fake library, real index/ZIP/PDF
 setup.sh                  # One-line installer script
 server.json               # MCP Registry server definition
 server.py                 # Root-level backwards-compatible entry point
@@ -43,7 +45,8 @@ docs/                     # Documentation (tools, resources, capabilities, dev g
 
 ```bash
 uv sync --all-extras            # Install all dependencies
-uv run pytest test_server.py -v # Run tests
+uv run pytest -v                # Run all tests (unit + integration)
+uv run pytest test_integration.py -v  # Integration tests only
 uv run ruff check .             # Lint
 uv run ruff format --check .    # Check formatting
 uv run ruff format .            # Auto-format
@@ -134,6 +137,17 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 - Ruff rules: E, F, W, I
 - Async: all tool handlers are async, pytest uses `asyncio_mode = "auto"`
 - All tools are read-only and idempotent
+
+## Architecture rules
+
+These are invariants, not preferences — each one exists because breaking it caused a real bug.
+
+- **Tools must be `async def`.** FastMCP awaits sync tools inline on the event loop, so a sync tool blocks every other request for the duration of its network I/O. Wrap blocking work in `_helpers.run_blocking()`.
+- **Never bypass the root filter.** Anything that returns document names, paths, or content must check `_is_within_root` against the live collection. The persistent index outlives config changes and deletions, so index hits are only trusted when the document is still visible in the current library.
+- **Don't swallow cache failures at `debug`.** A cache that fails silently looks identical to a slow one. L2 write failures log at `warning`.
+- **Every render/download cache key includes the document hash.** Keys without it serve stale content after a document changes; keys without background/format serve the wrong variant.
+- **Config comes from `config.env_int`/`env_bool`.** Bare `int(os.environ[...])` at import time turns a typo in a client config into an unexplained startup crash.
+- **`index.upsert_page`/`store_extraction_result` must ensure the parent row exists** — `pages` has a foreign key onto `documents`.
 
 ## Gotchas
 

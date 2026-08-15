@@ -6,25 +6,23 @@ and document text extraction.
 """
 
 import json
+import logging
 import tempfile
-import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from rm_mcp.cache import (
-    _MAX_EXTRACTION_CACHE_SIZE,
-    _extraction_cache,
-    _is_cache_valid,
-)
+logger = logging.getLogger(__name__)
 
 
 def _safe_extractall(zf: zipfile.ZipFile, target_dir: Path) -> None:
     """Extract zip contents with Zip Slip protection."""
-    resolved_target = str(target_dir.resolve())
+    resolved_target = target_dir.resolve()
     for member in zf.namelist():
         member_path = (target_dir / member).resolve()
-        if not str(member_path).startswith(resolved_target):
+        # A prefix string comparison would also accept a sibling directory whose
+        # name merely starts with the target's, so compare path components.
+        if member_path != resolved_target and resolved_target not in member_path.parents:
             raise ValueError(f"Zip member '{member}' would extract outside target directory")
     zf.extractall(target_dir)
 
@@ -153,8 +151,33 @@ def get_document_page_count(zip_path: Path) -> int:
         return len(list(tmpdir_path.glob("**/*.rm")))
 
 
+def _extract_source_text(tmpdir_path: Path) -> str:
+    """Extract the text of the original PDF or EPUB bundled in a document zip.
+
+    A reMarkable document zip carries the source file alongside the annotation
+    layer, so a PDF's own text is available without a second download.
+    """
+    from rm_mcp.extract.epub import extract_text_from_epub
+    from rm_mcp.extract.pdf import extract_text_from_pdf
+
+    for pdf_file in sorted(tmpdir_path.glob("**/*.pdf")):
+        text = extract_text_from_pdf(pdf_file)
+        if text:
+            return text
+
+    for epub_file in sorted(tmpdir_path.glob("**/*.epub")):
+        text = extract_text_from_epub(epub_file)
+        if text:
+            return text
+
+    return ""
+
+
 def extract_text_from_document_zip(
-    zip_path: Path, include_ocr: bool = False, doc_id: Optional[str] = None
+    zip_path: Path,
+    include_ocr: bool = False,
+    doc_id: Optional[str] = None,
+    include_source: bool = True,
 ) -> Dict[str, Any]:
     """
     Extract all text content from a reMarkable document zip.
@@ -163,29 +186,33 @@ def extract_text_from_document_zip(
         zip_path: Path to the document zip file
         include_ocr: Whether to run OCR on handwritten content
         doc_id: Optional document ID for caching OCR results
+        include_source: Whether to extract the underlying PDF/EPUB text
 
     Returns:
         {
             "typed_text": [...],      # From rmscene parsing (list of strings)
             "highlights": [...],       # From PDF annotations
             "handwritten_text": [...], # From OCR (if enabled) - one per page, in order
+            "source_text": str,        # Text of the underlying PDF/EPUB, if any
             "pages": int,
             "page_ids": [...],         # Page UUIDs in order
             "ocr_backend": str,        # Which OCR backend was used (if any)
         }
     """
-    # Check cache if doc_id provided
-    if doc_id and doc_id in _extraction_cache:
-        cached = _extraction_cache[doc_id]
-        # Return cached result if OCR requirement is satisfied and cache is valid
-        # (cached with OCR can satisfy no-OCR request, but not vice versa)
-        if (cached["include_ocr"] or not include_ocr) and _is_cache_valid(cached):
-            return cached["result"]
+    from rm_mcp.cache import cache_ocr_result, get_cached_ocr_result
+
+    # Check cache if doc_id provided. A cached result that includes OCR can
+    # satisfy a no-OCR request, but not the other way around.
+    if doc_id:
+        cached = get_cached_ocr_result(doc_id, include_ocr=include_ocr)
+        if cached is not None and (cached.get("source_text") or not include_source):
+            return cached
 
     result: Dict[str, Any] = {
         "typed_text": [],
         "highlights": [],
         "handwritten_text": None,
+        "source_text": "",
         "pages": 0,
         "page_ids": [],
         "ocr_backend": None,
@@ -248,21 +275,20 @@ def extract_text_from_document_zip(
                 # Malformed JSON - skip this file
                 pass
 
+        # Extract the underlying PDF/EPUB text (the document's own content,
+        # as opposed to the annotation layer above).
+        if include_source:
+            try:
+                result["source_text"] = _extract_source_text(tmpdir_path)
+            except Exception:
+                logger.warning("Failed to extract source document text", exc_info=True)
+
         # OCR for handwritten content is handled at the tool level via sampling.
         # This function no longer performs OCR directly.
 
-    # Cache result if doc_id provided
+    # Cache result if doc_id provided. Goes through cache_ocr_result so the
+    # write-through to the persistent index happens here too.
     if doc_id:
-        _extraction_cache[doc_id] = {
-            "result": result,
-            "include_ocr": include_ocr,
-            "timestamp": time.time(),
-        }
-        if len(_extraction_cache) > _MAX_EXTRACTION_CACHE_SIZE:
-            # Evict oldest entries (by insertion order, dicts are ordered in Python 3.7+)
-            excess = len(_extraction_cache) - _MAX_EXTRACTION_CACHE_SIZE
-            keys_to_remove = list(_extraction_cache.keys())[:excess]
-            for key in keys_to_remove:
-                del _extraction_cache[key]
+        cache_ocr_result(doc_id, result, include_ocr=include_ocr)
 
     return result

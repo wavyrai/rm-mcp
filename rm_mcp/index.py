@@ -13,7 +13,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +117,23 @@ class DocumentIndex:
 
         self._db_path = db_path
         self._local = threading.local()
+        self._connections: List[sqlite3.Connection] = []
 
-        # Ensure parent directory exists (skip for :memory:)
-        if db_path != ":memory:":
+        # A plain ":memory:" database is private to the connection that opened
+        # it, and connections here are thread-local — so every thread would get
+        # its own empty database. Shared-cache URI form keeps one database that
+        # all threads of this process see.
+        self._is_memory = db_path == ":memory:"
+        if self._is_memory:
+            self._connect_path = f"file:rm-mcp-{id(self):x}?mode=memory&cache=shared"
+            self._use_uri = True
+            # Hold an extra connection open: a shared-cache in-memory database
+            # is destroyed as soon as the last connection to it closes.
+            self._keepalive = sqlite3.connect(self._connect_path, uri=True)
+        else:
+            self._connect_path = db_path
+            self._use_uri = False
+            self._keepalive = None
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize schema on the creating thread
@@ -150,12 +164,28 @@ class DocumentIndex:
         """Get a thread-local database connection."""
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(self._db_path)
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn = sqlite3.connect(self._connect_path, uri=self._use_uri)
+            if not self._is_memory:
+                conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.row_factory = sqlite3.Row
             self._local.conn = conn
+            self._connections.append(conn)
         return conn
+
+    def _ensure_document_row(self, conn: sqlite3.Connection, doc_id: str) -> None:
+        """Make sure a parent row exists before writing pages.
+
+        `pages` has a foreign key onto `documents`, so page writes for a
+        document the background loader has not registered yet would otherwise
+        fail with an IntegrityError that the callers swallow — silently
+        disabling the persistent cache.
+        """
+        conn.execute(
+            "INSERT OR IGNORE INTO documents (doc_id, indexed_at) VALUES (?, ?)",
+            (doc_id, datetime.now(timezone.utc).isoformat()),
+        )
 
     # -----------------------------------------------------------------
     # Document operations
@@ -174,23 +204,23 @@ class DocumentIndex:
         """Insert or update document metadata."""
         conn = self._get_connection()
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            """
-            INSERT INTO documents
-                (doc_id, doc_hash, name, path, file_type, modified_at, page_count, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(doc_id) DO UPDATE SET
-                doc_hash = COALESCE(excluded.doc_hash, documents.doc_hash),
-                name = COALESCE(excluded.name, documents.name),
-                path = COALESCE(excluded.path, documents.path),
-                file_type = COALESCE(excluded.file_type, documents.file_type),
-                modified_at = COALESCE(excluded.modified_at, documents.modified_at),
-                page_count = COALESCE(excluded.page_count, documents.page_count),
-                indexed_at = excluded.indexed_at
-            """,
-            (doc_id, doc_hash, name, path, file_type, modified_at, page_count, now),
-        )
-        conn.commit()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO documents
+                    (doc_id, doc_hash, name, path, file_type, modified_at, page_count, indexed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    doc_hash = COALESCE(excluded.doc_hash, documents.doc_hash),
+                    name = COALESCE(excluded.name, documents.name),
+                    path = COALESCE(excluded.path, documents.path),
+                    file_type = COALESCE(excluded.file_type, documents.file_type),
+                    modified_at = COALESCE(excluded.modified_at, documents.modified_at),
+                    page_count = COALESCE(excluded.page_count, documents.page_count),
+                    indexed_at = excluded.indexed_at
+                """,
+                (doc_id, doc_hash, name, path, file_type, modified_at, page_count, now),
+            )
 
     def get_document_hash(self, doc_id: str) -> Optional[str]:
         """Get the stored hash for a document."""
@@ -210,13 +240,14 @@ class DocumentIndex:
         if stored_hash != current_hash:
             # Hash changed — clear stale pages and FTS entries
             conn = self._get_connection()
-            # Delete FTS entries for this document's pages
-            conn.execute(
-                "DELETE FROM pages_fts WHERE rowid IN (SELECT rowid FROM pages WHERE doc_id = ?)",
-                (doc_id,),
-            )
-            conn.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
-            conn.commit()
+            with conn:
+                # Delete FTS entries for this document's pages
+                conn.execute(
+                    "DELETE FROM pages_fts "
+                    "WHERE rowid IN (SELECT rowid FROM pages WHERE doc_id = ?)",
+                    (doc_id,),
+                )
+                conn.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
             logger.debug(f"Cleared stale pages for document {doc_id}")
             return True
         return False
@@ -236,17 +267,31 @@ class DocumentIndex:
         """Insert or update page content and sync FTS index."""
         conn = self._get_connection()
         now = datetime.now(timezone.utc).isoformat()
+        with conn:
+            self._ensure_document_row(conn, doc_id)
+            self._write_page(conn, doc_id, page_number, content_type, content, ocr_backend, now)
 
-        # Check if row already exists (for FTS cleanup)
+    def _write_page(
+        self,
+        conn: sqlite3.Connection,
+        doc_id: str,
+        page_number: int,
+        content_type: str,
+        content: str,
+        ocr_backend: Optional[str],
+        now: str,
+    ) -> None:
+        """Write one page row and keep its FTS entry in sync.
+
+        Must be called inside a transaction.
+        """
+        # Drop the stale FTS entry first — fts5 has no upsert by rowid.
         existing = conn.execute(
             "SELECT rowid FROM pages WHERE doc_id = ? AND page_number = ? AND content_type = ?",
             (doc_id, page_number, content_type),
         ).fetchone()
-
         if existing:
-            old_rowid = existing[0]
-            # Delete old FTS entry
-            conn.execute("DELETE FROM pages_fts WHERE rowid = ?", (old_rowid,))
+            conn.execute("DELETE FROM pages_fts WHERE rowid = ?", (existing[0],))
 
         conn.execute(
             """
@@ -270,8 +315,6 @@ class DocumentIndex:
                 "INSERT INTO pages_fts(rowid, doc_id, content) VALUES (?, ?, ?)",
                 (row[0], doc_id, content),
             )
-
-        conn.commit()
 
     def get_page_ocr(
         self, doc_id: str, page_number: int, backend: str = "sampling"
@@ -316,48 +359,27 @@ class DocumentIndex:
         if highlights:
             parts.append((0, "highlight", "\n\n".join(highlights), None))
 
-        handwritten = result.get("handwritten_text", [])
-        if handwritten:
-            parts.append((0, "ocr", "\n\n".join(handwritten), ocr_backend))
+        source_text = result.get("source_text")
+        if source_text and source_text.strip():
+            parts.append((0, "source_text", source_text, None))
 
+        # Handwritten text arrives as one entry per page, in page order — keep
+        # that granularity so get_page_ocr() can serve a single page later.
+        handwritten = result.get("handwritten_text") or []
+        for page_index, page_text in enumerate(handwritten, start=1):
+            if page_text and page_text.strip():
+                parts.append((page_index, "ocr", page_text, ocr_backend))
+
+        # Nothing to write — return before opening a transaction. Opening one
+        # and returning without committing would leave this connection holding
+        # the write lock, stalling every other thread's writes.
         if not parts:
             return
 
-        for page_number, content_type, content, backend in parts:
-            # Clean up existing FTS entry
-            existing = conn.execute(
-                "SELECT rowid FROM pages WHERE doc_id = ? AND page_number = ? AND content_type = ?",
-                (doc_id, page_number, content_type),
-            ).fetchone()
-            if existing:
-                conn.execute("DELETE FROM pages_fts WHERE rowid = ?", (existing[0],))
-
-            # Upsert the page
-            conn.execute(
-                """
-                INSERT INTO pages
-                    (doc_id, page_number, content_type, content, ocr_backend, indexed_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(doc_id, page_number, content_type) DO UPDATE SET
-                    content = excluded.content,
-                    ocr_backend = excluded.ocr_backend,
-                    indexed_at = excluded.indexed_at
-                """,
-                (doc_id, page_number, content_type, content, backend, now),
-            )
-
-            # Insert new FTS entry
-            row = conn.execute(
-                "SELECT rowid FROM pages WHERE doc_id = ? AND page_number = ? AND content_type = ?",
-                (doc_id, page_number, content_type),
-            ).fetchone()
-            if row:
-                conn.execute(
-                    "INSERT INTO pages_fts(rowid, doc_id, content) VALUES (?, ?, ?)",
-                    (row[0], doc_id, content),
-                )
-
-        conn.commit()
+        with conn:
+            self._ensure_document_row(conn, doc_id)
+            for page_number, content_type, content, backend in parts:
+                self._write_page(conn, doc_id, page_number, content_type, content, backend, now)
 
     # -----------------------------------------------------------------
     # Search
@@ -416,9 +438,9 @@ class DocumentIndex:
     # -----------------------------------------------------------------
 
     def get_preview(self, doc_id: str, max_chars: int = 200) -> Optional[str]:
-        """Get text preview from indexed pages. Prefers typed_text > highlight > ocr."""
+        """Get text preview from indexed pages. Prefers typed_text > highlight > ocr > source."""
         conn = self._get_connection()
-        for content_type in ("typed_text", "highlight", "ocr"):
+        for content_type in ("typed_text", "highlight", "ocr", "source_text"):
             row = conn.execute(
                 "SELECT content FROM pages WHERE doc_id = ? AND content_type = ? LIMIT 1",
                 (doc_id, content_type),
@@ -443,6 +465,48 @@ class DocumentIndex:
             return None
         combined = "\n\n".join(parts)
         return combined[:max_chars]
+
+    def get_page_count(self, doc_id: str) -> Optional[int]:
+        """Get the stored page count for a document, if known."""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT page_count FROM documents WHERE doc_id = ?", (doc_id,)
+        ).fetchone()
+        return row["page_count"] if row and row["page_count"] else None
+
+    def prune_missing(self, known_doc_ids: Iterable[str]) -> int:
+        """Delete indexed data for documents that are no longer in the library.
+
+        Without this, deleted and trashed documents keep their content
+        searchable forever.
+
+        Args:
+            known_doc_ids: IDs of every document currently visible to the server.
+
+        Returns:
+            Number of document rows removed.
+        """
+        keep = set(known_doc_ids)
+        conn = self._get_connection()
+        stale = [
+            row["doc_id"]
+            for row in conn.execute("SELECT doc_id FROM documents").fetchall()
+            if row["doc_id"] not in keep
+        ]
+        if not stale:
+            return 0
+
+        with conn:
+            for doc_id in stale:
+                conn.execute(
+                    "DELETE FROM pages_fts "
+                    "WHERE rowid IN (SELECT rowid FROM pages WHERE doc_id = ?)",
+                    (doc_id,),
+                )
+                conn.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
+                conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+        logger.info("Pruned %d document(s) no longer in the library", len(stale))
+        return len(stale)
 
     def get_indexed_document_count(self) -> int:
         """Count documents that have at least one indexed page."""
@@ -475,26 +539,36 @@ class DocumentIndex:
         }
 
     def rebuild(self) -> None:
-        """Rebuild the FTS index."""
+        """Rebuild the FTS index from the pages table."""
         conn = self._get_connection()
-        conn.execute("INSERT INTO pages_fts(pages_fts) VALUES('rebuild')")
-        conn.commit()
+        with conn:
+            conn.execute("DELETE FROM pages_fts")
+            conn.execute(
+                "INSERT INTO pages_fts(rowid, doc_id, content) "
+                "SELECT rowid, doc_id, content FROM pages"
+            )
 
     def clear(self) -> None:
         """Clear all indexed data."""
         conn = self._get_connection()
-        conn.execute("DELETE FROM pages_fts")
-        conn.execute("DELETE FROM pages")
-        conn.execute("DELETE FROM documents")
-        conn.commit()
+        with conn:
+            conn.execute("DELETE FROM pages_fts")
+            conn.execute("DELETE FROM pages")
+            conn.execute("DELETE FROM documents")
         logger.info("Document index cleared")
 
     def close(self) -> None:
-        """Close the thread-local connection (if any)."""
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
+        """Close every connection this index opened, on any thread."""
+        for conn in self._connections:
+            try:
+                conn.close()
+            except Exception:
+                logger.debug("Failed to close an index connection", exc_info=True)
+        self._connections.clear()
+        self._local = threading.local()
+        if self._keepalive is not None:
+            self._keepalive.close()
+            self._keepalive = None
 
     @property
     def db_path(self) -> str:

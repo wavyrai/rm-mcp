@@ -6,9 +6,12 @@ api.py, extract.py, and tools.py into one module.
 """
 
 import logging
-import os
+import threading
 import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
+
+from rm_mcp.config import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +24,11 @@ _cached_collection = None
 _cached_root_hash: Optional[str] = None
 _cache_timestamp: float = 0.0
 
-try:
-    _CACHE_TTL_SECONDS = int(os.environ.get("REMARKABLE_CACHE_TTL", "60"))
-except ValueError:
-    logger.warning("Invalid REMARKABLE_CACHE_TTL value, using default of 60 seconds")
-    _CACHE_TTL_SECONDS = 60
+# The collection cache is read from tool calls on the event loop and written
+# from the background loader's worker thread.
+_collection_lock = threading.Lock()
+
+_CACHE_TTL_SECONDS = env_int("REMARKABLE_CACHE_TTL", 60, minimum=0)
 
 
 def get_cached_collection() -> Tuple[Any, List]:
@@ -51,15 +54,17 @@ def get_cached_collection() -> Tuple[Any, List]:
     now = time.time()
 
     # If we have a valid cache within TTL, return immediately
-    if _cached_collection is not None and (now - _cache_timestamp) < _CACHE_TTL_SECONDS:
-        logger.debug("Collection cache hit (within TTL)")
-        return client, _cached_collection
+    with _collection_lock:
+        if _cached_collection is not None and (now - _cache_timestamp) < _CACHE_TTL_SECONDS:
+            logger.debug("Collection cache hit (within TTL)")
+            return client, _cached_collection
 
     # Check if client supports root hash (for change detection)
     if not hasattr(client, "get_root_hash"):
         collection = client.get_meta_items()
-        _cached_collection = collection
-        _cache_timestamp = time.time()
+        with _collection_lock:
+            _cached_collection = collection
+            _cache_timestamp = time.time()
         return client, collection
 
     # Cloud mode: check root hash to see if anything changed
@@ -68,22 +73,25 @@ def get_cached_collection() -> Tuple[Any, List]:
     except Exception:
         # If root hash fetch fails, do a full re-fetch
         collection = client.get_meta_items()
-        _cached_collection = collection
-        _cache_timestamp = time.time()
+        with _collection_lock:
+            _cached_collection = collection
+            _cache_timestamp = time.time()
         return client, collection
 
-    if _cached_collection is not None and current_hash == _cached_root_hash:
-        # Nothing changed, refresh timestamp
-        logger.debug("Collection cache hit (root hash unchanged)")
-        _cache_timestamp = time.time()
-        return client, _cached_collection
+    with _collection_lock:
+        if _cached_collection is not None and current_hash == _cached_root_hash:
+            # Nothing changed, refresh timestamp
+            logger.debug("Collection cache hit (root hash unchanged)")
+            _cache_timestamp = time.time()
+            return client, _cached_collection
 
     # Root hash changed or no cache — full re-fetch
     logger.debug("Collection cache miss — fetching full collection")
     collection = client.get_meta_items(root_hash=current_hash)
-    _cached_collection = collection
-    _cached_root_hash = current_hash
-    _cache_timestamp = time.time()
+    with _collection_lock:
+        _cached_collection = collection
+        _cached_root_hash = current_hash
+        _cache_timestamp = time.time()
     return client, collection
 
 
@@ -107,24 +115,28 @@ def set_cached_collection(client, collection, root_hash: Optional[str] = None) -
 
     api_mod._client_singleton = client
 
-    _cached_collection = collection
+    resolved_hash = root_hash
     # Use provided root hash or try to get one for future comparisons
-    if root_hash is not None:
-        _cached_root_hash = root_hash
-    elif hasattr(client, "get_root_hash"):
+    if resolved_hash is None and hasattr(client, "get_root_hash"):
         try:
-            _cached_root_hash = client.get_root_hash()
+            resolved_hash = client.get_root_hash()
         except Exception:
-            pass
-    _cache_timestamp = time.time()
+            logger.debug("Could not fetch root hash while seeding cache", exc_info=True)
+
+    with _collection_lock:
+        _cached_collection = collection
+        if resolved_hash is not None:
+            _cached_root_hash = resolved_hash
+        _cache_timestamp = time.time()
 
 
 def invalidate_collection_cache() -> None:
     """Force the next get_cached_collection() call to re-fetch."""
     global _cached_collection, _cached_root_hash, _cache_timestamp
-    _cached_collection = None
-    _cached_root_hash = None
-    _cache_timestamp = 0.0
+    with _collection_lock:
+        _cached_collection = None
+        _cached_root_hash = None
+        _cache_timestamp = 0.0
 
 
 # =============================================================================
@@ -141,12 +153,12 @@ _MAX_PAGE_OCR_CACHE_SIZE = 200
 # Module-level cache for OCR results (full document)
 # Key: doc_id
 # Value: {"result": extraction_result, "include_ocr": bool, "timestamp": float}
-_extraction_cache: Dict[str, Dict[str, Any]] = {}
+_extraction_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
 # Per-page cache for sampling OCR results
 # Key: (doc_id, page_number, backend)
 # Value: {"text": str, "timestamp": float}
-_page_ocr_cache: Dict[tuple, Dict[str, Any]] = {}
+_page_ocr_cache: "OrderedDict[tuple, Dict[str, Any]]" = OrderedDict()
 
 
 def _is_cache_valid(cached: Dict[str, Any]) -> bool:
@@ -199,6 +211,7 @@ def get_cached_page_ocr(
     if cache_key in _page_ocr_cache:
         cached = _page_ocr_cache[cache_key]
         if _is_cache_valid(cached):
+            _page_ocr_cache.move_to_end(cache_key)
             return cached["text"]
         # Expired, remove it
         _page_ocr_cache.pop(cache_key, None)
@@ -247,10 +260,9 @@ def cache_page_ocr(
         "text": text,
         "timestamp": time.time(),
     }
-    if len(_page_ocr_cache) > _MAX_PAGE_OCR_CACHE_SIZE:
-        excess = len(_page_ocr_cache) - _MAX_PAGE_OCR_CACHE_SIZE
-        for key in list(_page_ocr_cache.keys())[:excess]:
-            del _page_ocr_cache[key]
+    _page_ocr_cache.move_to_end(cache_key)
+    while len(_page_ocr_cache) > _MAX_PAGE_OCR_CACHE_SIZE:
+        _page_ocr_cache.popitem(last=False)
 
     # L2: write-through to SQLite index
     try:
@@ -260,7 +272,7 @@ def cache_page_ocr(
         if index is not None:
             index.upsert_page(doc_id, page, text, "ocr", backend)
     except Exception:
-        logger.debug("L2 write failed for page OCR", exc_info=True)
+        logger.warning("Could not persist page OCR to the index", exc_info=True)
 
 
 def get_cached_ocr_result(
@@ -288,6 +300,7 @@ def get_cached_ocr_result(
                 cached_backend = cached["result"].get("ocr_backend")
                 if cached_backend != ocr_backend:
                     return None
+            _extraction_cache.move_to_end(doc_id)
             return cached["result"]
     return None
 
@@ -313,10 +326,9 @@ def cache_ocr_result(
         "include_ocr": include_ocr,
         "timestamp": time.time(),
     }
-    if len(_extraction_cache) > _MAX_EXTRACTION_CACHE_SIZE:
-        excess = len(_extraction_cache) - _MAX_EXTRACTION_CACHE_SIZE
-        for key in list(_extraction_cache.keys())[:excess]:
-            del _extraction_cache[key]
+    _extraction_cache.move_to_end(doc_id)
+    while len(_extraction_cache) > _MAX_EXTRACTION_CACHE_SIZE:
+        _extraction_cache.popitem(last=False)
 
     # L2: write-through to SQLite index
     try:
@@ -326,17 +338,4 @@ def cache_ocr_result(
         if index is not None:
             index.store_extraction_result(doc_id, result)
     except Exception:
-        logger.debug("L2 write failed for extraction result", exc_info=True)
-
-
-# =============================================================================
-# File type cache (from tools.py)
-# =============================================================================
-
-_file_type_cache: Dict[str, str] = {}
-
-# =============================================================================
-# Rendered image cache (from tools.py)
-# =============================================================================
-
-_rendered_image_cache: Dict[str, str] = {}  # key: f"{doc_id}:{page}" -> base64 PNG
+        logger.warning("Could not persist extraction result to the index", exc_info=True)
