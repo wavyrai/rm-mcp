@@ -82,6 +82,12 @@ def get_file_type(client, doc) -> str:
     """
     Get the file type (pdf, epub, notebook) for a document.
 
+    The document's blob list is authoritative: a document containing a .pdf
+    blob is a PDF whatever it happens to be called. Plenty of documents are
+    named without an extension — an arXiv paper saved as "2304.03442" is a PDF,
+    and calling it a notebook sends reads down the OCR path for text that is
+    already there.
+
     Args:
         client: The reMarkable API client
         doc: The document to check
@@ -89,7 +95,19 @@ def get_file_type(client, doc) -> str:
     Returns:
         File type string: 'pdf', 'epub', or 'notebook'
     """
-    # Infer from document name
+    # Blob names come from the sync index and are already loaded — no extra
+    # request is needed to consult them.
+    files = getattr(doc, "files", None)
+    if isinstance(files, (list, tuple)):
+        for entry in files:
+            blob_name = (entry.get("id") if isinstance(entry, dict) else "") or ""
+            lowered = blob_name.lower()
+            if lowered.endswith(".pdf"):
+                return "pdf"
+            if lowered.endswith(".epub"):
+                return "epub"
+
+    # Fall back to the visible name when the blob list is unavailable.
     name = doc.VissibleName.lower()
     if name.endswith(".pdf"):
         return "pdf"

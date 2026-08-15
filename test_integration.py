@@ -1516,3 +1516,45 @@ class TestWritesRespectRootPath:
             data = await call("remarkable_rename", item="Report", new_name="Final Report")
         assert data["renamed"] is True
         assert cloud.visible_names()["doc-work"][0] == "Final Report"
+
+
+class TestFileTypeDetection:
+    """A document's blobs decide its type, not what it happens to be called."""
+
+    def make(self, name, blob_names):
+        d = doc("x", name)
+        d.files = [
+            {"id": b, "hash": "h", "type": "0", "subfiles": 0, "size": 1} for b in blob_names
+        ]
+        return d
+
+    def test_pdf_without_an_extension_in_its_name(self):
+        """An arXiv paper saved as '2304.03442' is still a PDF."""
+        from rm_mcp.api import get_file_type
+
+        d = self.make("2304.03442", ["x.content", "x.metadata", "x.pagedata", "x.pdf"])
+        assert get_file_type(None, d) == "pdf"
+
+    def test_epub_without_an_extension(self):
+        from rm_mcp.api import get_file_type
+
+        d = self.make("Some Book", ["x.content", "x.metadata", "x.epub"])
+        assert get_file_type(None, d) == "epub"
+
+    def test_notebook_has_no_source_blob(self):
+        from rm_mcp.api import get_file_type
+
+        d = self.make("Quick sheets", ["x.content", "x.metadata", "x/p1.rm"])
+        assert get_file_type(None, d) == "notebook"
+
+    def test_name_is_used_when_blobs_are_unknown(self):
+        from rm_mcp.api import get_file_type
+
+        d = doc("x", "Report.pdf")
+        assert get_file_type(None, d) == "pdf"
+
+    def test_a_notebook_named_like_a_pdf_follows_its_blobs(self):
+        from rm_mcp.api import get_file_type
+
+        d = self.make("notes about a pdf", ["x.content", "x.metadata", "x/p1.rm"])
+        assert get_file_type(None, d) == "notebook"
