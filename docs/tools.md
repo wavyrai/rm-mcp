@@ -12,8 +12,13 @@ This document provides detailed documentation for all MCP tools provided by rm-m
 | [`remarkable_recent`](#remarkable_recent) | Get recently modified documents |
 | [`remarkable_status`](#remarkable_status) | Check connection status |
 | [`remarkable_image`](#remarkable_image) | Get page images (PNG or SVG) |
+| [`remarkable_rename`](#remarkable_rename) | Rename a document or folder |
+| [`remarkable_move`](#remarkable_move) | Move an item into another folder |
+| [`remarkable_create_folder`](#remarkable_create_folder) | Create a new folder |
 
-All tools are **read-only** and return structured JSON with hints for logical next actions.
+The first six tools are **read-only**. The last three change the library's
+structure but never a document's contents, and none of them deletes anything.
+All return structured JSON with hints for logical next actions.
 
 ## Root Path Filtering
 
@@ -445,3 +450,91 @@ Common error types:
 - `document_not_found` — Document doesn't exist (includes suggestions)
 - `authentication_failed` — Token invalid or authentication failed
 - `connection_error` — Network or API connection issue
+
+---
+
+## Organising tools
+
+Three tools change the library's structure. Nothing else does, and none of them
+deletes anything or alters a document's pages — the worst case is something
+having the wrong name or living in the wrong folder, which the same tools undo.
+
+Set `REMARKABLE_READ_ONLY=1` to disable all three.
+
+### How a change is applied
+
+The library is a Merkle tree: blobs are addressed by the hash of their content,
+a document's index lists its blobs, and the root index lists every document. A
+change rewrites that chain upward and then commits by pointing the root at the
+new index. Everything before that commit is an upload of content nothing
+references yet, so a failure partway through leaves the library untouched.
+
+The commit carries the generation it was based on, so a concurrent edit on the
+tablet is rejected rather than overwritten (and retried automatically). Because
+blobs are immutable, the root hash a change replaced remains a complete snapshot
+of the library — every response includes it as `previous_root`.
+
+Changes respect `REMARKABLE_ROOT_PATH`: items outside the configured root cannot
+be renamed, moved, or used as a destination.
+
+---
+
+## remarkable_rename
+
+**Rename a document or folder.**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `item` | string | *required* | Current name or full path |
+| `new_name` | string | *required* | The new name (a name, not a path) |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
+
+```python
+remarkable_rename("Meeting Notes", "Q3 Planning")
+remarkable_rename("/Work/Draft", "Final Report")
+```
+
+A `new_name` containing `/` is refused — use `remarkable_move` to change where
+something lives. If two items share the given name, the response lists their
+full paths instead of guessing.
+
+---
+
+## remarkable_move
+
+**Move a document or folder into another folder.**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `item` | string | *required* | Name or full path of the item to move |
+| `destination` | string | *required* | Destination folder path, or `"/"` for the top level |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
+
+```python
+remarkable_move("Q3 Planning", "/Work")
+remarkable_move("/Inbox/Receipt.pdf", "/Financial")
+remarkable_move("Stray Note", "/")
+```
+
+Refused when the destination is not a folder, when the item is already there,
+and when a folder would be moved into itself or one of its own subfolders.
+
+---
+
+## remarkable_create_folder
+
+**Create a new empty folder.**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path` | string | *required* | Full path of the folder, or just a name for the top level |
+| `compact_output` | bool | `False` | Omit hints to reduce token usage |
+
+```python
+remarkable_create_folder("Receipts")
+remarkable_create_folder("/Work/Archive")
+```
+
+The parent folder must already exist — create nested folders one level at a
+time. A folder that already exists in the same place is reported rather than
+duplicated.

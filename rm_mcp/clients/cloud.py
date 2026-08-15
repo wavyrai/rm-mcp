@@ -7,6 +7,8 @@ rmapy is abandoned and uses deprecated endpoints that return 500 errors.
 Based on the protocol used by ddvk/rmapi.
 """
 
+import base64
+import hashlib
 import json
 import logging
 import threading
@@ -43,11 +45,111 @@ FILES_URL = f"{SYNC_HOST}/sync/v3/files"
 # http header" — including requests that omit the header entirely.
 RM_FILENAME_HEADER = "rm-filename"
 ROOT_INDEX_FILENAME = "root.docSchema"
+ROOT_PUT_URL = f"{SYNC_HOST}/sync/v3/root"
+
+# Index files are line-oriented text. The first line is the schema version, the
+# second summarises the index ("." for the root, the document UUID for a
+# document index), and the rest are entries.
+INDEX_SCHEMA_VERSION = "4"
+ROOT_INDEX_OWNER = "."
+
+# Uploads must carry a CRC32C (Castagnoli) checksum of the body; without it the
+# API answers 400 "missing checksum".
+_CRC32C_POLY = 0x82F63B78
+_CRC32C_TABLE = []
+for _i in range(256):
+    _crc = _i
+    for _ in range(8):
+        _crc = (_crc >> 1) ^ (_CRC32C_POLY if _crc & 1 else 0)
+    _CRC32C_TABLE.append(_crc)
+
+
+def crc32c(data: bytes) -> int:
+    """CRC32C (Castagnoli) checksum, as used by Google Cloud Storage."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc = (crc >> 8) ^ _CRC32C_TABLE[(crc ^ byte) & 0xFF]
+    return crc ^ 0xFFFFFFFF
+
+
+def crc32c_header(data: bytes) -> str:
+    """Format a body checksum for the `x-goog-hash` header."""
+    return "crc32c=" + base64.b64encode(crc32c(data).to_bytes(4, "big")).decode()
+
+
+def blob_hash(content: bytes) -> str:
+    """Content address of a blob: every hash in this protocol is this."""
+    return hashlib.sha256(content).hexdigest()
 
 
 def _index_filename(doc_id: str) -> str:
     """Filename under which a document's blob index is stored."""
     return f"{doc_id}.docSchema"
+
+
+def serialize_index(entries: List[Dict[str, Any]], owner: str) -> bytes:
+    """Render index entries back into their on-the-wire form.
+
+    The hash of an index is the SHA-256 of exactly these bytes, so this has to
+    reproduce the server's formatting precisely. Verified byte-for-byte against
+    a live account's root index and document indexes.
+
+    Args:
+        entries: Index entries, as returned by `_parse_index`.
+        owner: `.` for the root index, or the document UUID for a document index.
+    """
+    total_size = sum(int(e["size"]) for e in entries)
+    lines = [INDEX_SCHEMA_VERSION, f"0:{owner}:{len(entries)}:{total_size}"]
+    lines += [f"{e['hash']}:{e['type']}:{e['id']}:{e['subfiles']}:{e['size']}" for e in entries]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def serialize_metadata(metadata: Dict[str, Any]) -> bytes:
+    """Render a document's .metadata file the way the tablet writes it."""
+    return (json.dumps(metadata, indent=4, sort_keys=True) + "\n").encode("utf-8")
+
+
+def parse_index(content: bytes) -> List[Dict[str, Any]]:
+    """Parse an index file into entries.
+
+    Index files start with a schema version line. Schema 4 adds a summary
+    line describing the index itself (four fields) before the entries,
+    which have five.
+    """
+    lines = content.decode("utf-8").strip().split("\n")
+    entries = []
+
+    # First line is schema version
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        parts = line.split(":")
+        if len(parts) < 5:
+            # Schema 4 summary line, not an entry
+            logger.debug("Skipping non-entry index line: %s", line[:100])
+            continue
+        try:
+            entries.append(
+                {
+                    "hash": parts[0],
+                    "type": parts[1],
+                    "id": parts[2],
+                    "subfiles": int(parts[3]),
+                    "size": int(parts[4]),
+                }
+            )
+        except (ValueError, IndexError):
+            logger.warning("Skipping malformed index line: %s", line[:100])
+
+    return entries
+
+
+class RootConflict(RuntimeError):
+    """Raised when the library changed between reading and writing the root.
+
+    Nothing has been modified when this is raised: the root update is the only
+    step that changes anything, and it was rejected.
+    """
 
 
 class RemarkableClient:
@@ -104,6 +206,8 @@ class RemarkableClient:
         url: str,
         method: str = "GET",
         headers: Optional[Dict[str, str]] = None,
+        data: Optional[bytes] = None,
+        json_body: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
         """Make an authenticated request using the pooled session."""
         if not self.user_token:
@@ -111,7 +215,9 @@ class RemarkableClient:
 
         extra = dict(headers or {})
         request_headers = {"Authorization": f"Bearer {self.user_token}", **extra}
-        response = self._session.request(method, url, headers=request_headers, timeout=60)
+        response = self._session.request(
+            method, url, headers=request_headers, data=data, json=json_body, timeout=60
+        )
 
         if response.status_code == 401:
             # Token expired, try to renew (thread-safe)
@@ -121,9 +227,113 @@ class RemarkableClient:
                 if request_headers["Authorization"] == current_auth:
                     self.renew_token()
             request_headers = {"Authorization": f"Bearer {self.user_token}", **extra}
-            response = self._session.request(method, url, headers=request_headers, timeout=60)
+            response = self._session.request(
+                method, url, headers=request_headers, data=data, json=json_body, timeout=60
+            )
 
         return response
+
+    # -----------------------------------------------------------------
+    # Write operations
+    # -----------------------------------------------------------------
+
+    def get_root_info(self) -> tuple:
+        """Fetch the current root hash and generation.
+
+        The generation is the library's optimistic-concurrency token: a root
+        update is only accepted if it names the generation it was based on, so
+        a concurrent change from the tablet cannot be silently overwritten.
+
+        Returns:
+            Tuple of (root_hash, generation).
+        """
+        response = self._request(ROOT_URL)
+        response.raise_for_status()
+        data = response.json()
+        if "hash" not in data:
+            raise RuntimeError(f"Unexpected root response: {data}")
+        return data["hash"], data.get("generation", 0)
+
+    def upload_blob(self, content: bytes, filename: str) -> str:
+        """Upload a blob and return its content hash.
+
+        Blobs are content-addressed and immutable, so this is safe in
+        isolation: an uploaded blob changes nothing until a root update
+        references it.
+
+        Args:
+            content: Raw bytes to store.
+            filename: Name the blob is stored under (needs a known extension).
+
+        Returns:
+            The blob's SHA-256 hash.
+        """
+        digest = blob_hash(content)
+        response = self._request(
+            f"{FILES_URL}/{digest}",
+            method="PUT",
+            headers={
+                RM_FILENAME_HEADER: filename,
+                "x-goog-hash": crc32c_header(content),
+                "content-type": "application/octet-stream",
+            },
+            data=content,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Failed to upload {filename} (HTTP {response.status_code}): {response.text[:200]}"
+            )
+        return digest
+
+    def put_root(self, root_hash: str, generation: int, broadcast: bool = True) -> int:
+        """Point the library at a new root index.
+
+        This is the single commit point for any change: everything else is
+        content-addressed uploads that nothing references yet.
+
+        Args:
+            root_hash: Hash of the new root index blob (already uploaded).
+            generation: Generation this change was based on.
+            broadcast: Whether to notify devices to sync.
+
+        Returns:
+            The new generation.
+
+        Raises:
+            RootConflict: If the library changed underneath us.
+        """
+        response = self._request(
+            ROOT_PUT_URL,
+            method="PUT",
+            headers={RM_FILENAME_HEADER: "roothash"},
+            json_body={
+                "broadcast": broadcast,
+                "hash": root_hash,
+                "generation": generation,
+            },
+        )
+
+        if response.status_code in (409, 412):
+            raise RootConflict(
+                "The library changed while this update was being prepared. "
+                "Nothing was modified — retry the operation."
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Failed to update root (HTTP {response.status_code}): {response.text[:200]}"
+            )
+
+        data = response.json()
+        if data.get("hash") != root_hash:
+            raise RuntimeError("Root hash mismatch after update — aborting.")
+        return data.get("generation", generation + 1)
+
+    def get_index(self, index_hash: str, owner_id: str) -> List[Dict[str, Any]]:
+        """Fetch and parse an index blob (the root's, or a document's)."""
+        filename = (
+            ROOT_INDEX_FILENAME if owner_id == ROOT_INDEX_OWNER else _index_filename(owner_id)
+        )
+        return self._parse_index(self._get_file(index_hash, filename))
 
     def _get_file(self, file_hash: str, filename: str) -> bytes:
         """Download a file by its hash.
@@ -141,38 +351,8 @@ class RemarkableClient:
         return response.content
 
     def _parse_index(self, content: bytes) -> List[Dict[str, Any]]:
-        """Parse an index file into entries.
-
-        Index files start with a schema version line. Schema 4 adds a summary
-        line describing the index itself (four fields) before the entries,
-        which have five.
-        """
-        lines = content.decode("utf-8").strip().split("\n")
-        entries = []
-
-        # First line is schema version
-        for line in lines[1:]:
-            if not line.strip():
-                continue
-            parts = line.split(":")
-            if len(parts) < 5:
-                # Schema 4 summary line, not an entry
-                logger.debug("Skipping non-entry index line: %s", line[:100])
-                continue
-            try:
-                entries.append(
-                    {
-                        "hash": parts[0],
-                        "type": parts[1],
-                        "id": parts[2],
-                        "subfiles": int(parts[3]),
-                        "size": int(parts[4]),
-                    }
-                )
-            except (ValueError, IndexError):
-                logger.warning("Skipping malformed index line: %s", line[:100])
-
-        return entries
+        """Parse an index file into entries. See `parse_index`."""
+        return parse_index(content)
 
     def get_root_hash(self) -> str:
         """Fetch the current root hash from the cloud.

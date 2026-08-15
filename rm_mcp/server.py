@@ -63,9 +63,9 @@ def _build_instructions() -> str:
 
     base = """# reMarkable MCP Server
 
-Access documents from your reMarkable tablet. All operations are read-only.
+Access documents from your reMarkable tablet.
 
-## Available Tools
+## Reading (never changes anything)
 
 - `remarkable_browse(path)` - Browse folders (auto-redirects to read for documents)
 - `remarkable_read(document, page, pages, grep)` - Read document content
@@ -73,6 +73,17 @@ Access documents from your reMarkable tablet. All operations are read-only.
 - `remarkable_search(query, grep, limit)` - Search by name and indexed content
 - `remarkable_status()` - Check connection and diagnose issues
 - `remarkable_image(document, page, include_ocr)` - Get a PNG image with optional OCR
+
+## Organising (changes the library's structure)
+
+- `remarkable_rename(item, new_name)` - Rename a document or folder
+- `remarkable_move(item, destination)` - Move an item into another folder
+- `remarkable_create_folder(path)` - Create a new folder
+
+These three change where things live and what they are called. They never
+delete anything and never touch a document's pages or annotations, and each
+one is reversible with the same tools. Confirm with the user before
+reorganising anything they did not explicitly ask you to.
 
 ## Recommended Workflows
 

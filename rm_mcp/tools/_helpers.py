@@ -252,6 +252,18 @@ def clear_download_cache() -> None:
         _download_cache.clear()
 
 
+def invalidate_after_write() -> None:
+    """Drop caches that a structural change has just invalidated.
+
+    Renames and moves change names and paths, so a stale collection would
+    report the library as it was before the change.
+    """
+    from rm_mcp.cache import invalidate_collection_cache
+
+    invalidate_collection_cache()
+    _file_type_cache.clear()
+
+
 def record_page_count(doc_id: str, page_count: int) -> None:
     """Remember a document's page count so later calls need not recount it.
 

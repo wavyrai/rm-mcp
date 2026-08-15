@@ -12,6 +12,7 @@ the network.
 
 import io
 import json
+import json as _json  # kept accessible where a parameter named `json` shadows it
 import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -770,12 +771,13 @@ class RecordingSession:
     def mount(self, *args, **kwargs):
         pass
 
-    def request(self, method, url, headers=None, timeout=None):
+    # `json` shadows the module here because that is the keyword requests uses.
+    def request(self, method, url, headers=None, timeout=None, data=None, json=None):
         headers = headers or {}
         self.requests.append((url, headers.get("rm-filename")))
 
         if url.endswith("/sync/v4/root"):
-            return FakeResponse(text=json.dumps({"hash": self.root_hash, "generation": 1}))
+            return FakeResponse(text=_json.dumps({"hash": self.root_hash, "generation": 1}))
 
         filename = headers.get("rm-filename")
         if not filename or not filename.endswith(self.VALID_SUFFIXES):
@@ -1088,3 +1090,429 @@ class TestRootPathHelpers:
         monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
         displayed = _helpers._apply_root_filter(path)
         assert _helpers._resolve_root_path(displayed) == path
+
+
+# =============================================================================
+# Write operations — rename, move, create folder
+# =============================================================================
+
+
+class FakeCloud:
+    """A stand-in sync server that enforces the real one's rules.
+
+    Blobs are content-addressed and immutable, uploads must carry a correct
+    CRC32C, fetches must name the file, and a root update is only accepted if
+    it names the generation it was based on. Getting any of those wrong here
+    means getting them wrong against a real library.
+    """
+
+    def __init__(self):
+        self.blobs = {}
+        self.generation = 1
+        self.root_hash = None
+        self.uploads = []
+        self.root_updates = 0
+        self.conflict_once = False
+
+    # --- helpers used to build a starting library -------------------------
+
+    def put(self, content: bytes, name: str) -> str:
+        from rm_mcp.clients.cloud import blob_hash
+
+        digest = blob_hash(content)
+        self.blobs[digest] = content
+        return digest
+
+    def seed(self, documents):
+        """documents: list of (doc_id, visibleName, parent, type)."""
+        from rm_mcp.clients.cloud import serialize_index, serialize_metadata
+
+        root_entries = []
+        for doc_id, name, parent, doc_type in documents:
+            meta = serialize_metadata(
+                {
+                    "createdTime": "1700000000000",
+                    "lastModified": "1700000000000",
+                    "parent": parent,
+                    "pinned": False,
+                    "type": doc_type,
+                    "visibleName": name,
+                }
+            )
+            meta_hash = self.put(meta, f"{doc_id}.metadata")
+            files = [
+                {
+                    "hash": meta_hash,
+                    "type": "0",
+                    "id": f"{doc_id}.metadata",
+                    "subfiles": 0,
+                    "size": len(meta),
+                }
+            ]
+            index = serialize_index(files, doc_id)
+            doc_hash = self.put(index, f"{doc_id}.docSchema")
+            root_entries.append(
+                {
+                    "hash": doc_hash,
+                    "type": "0",
+                    "id": doc_id,
+                    "subfiles": len(files),
+                    "size": len(meta),
+                }
+            )
+        root_entries.sort(key=lambda e: e["id"])
+        root = serialize_index(root_entries, ".")
+        self.root_hash = self.put(root, "root.docSchema")
+
+    def visible_names(self):
+        """Read the library back the way a tablet would."""
+        from rm_mcp.clients.cloud import parse_index
+
+        names = {}
+        root = parse_index(self.blobs[self.root_hash])
+        for entry in root:
+            files = parse_index(self.blobs[entry["hash"]])
+            for f in files:
+                if f["id"].endswith(".metadata"):
+                    meta = _json.loads(self.blobs[f["hash"]])
+                    names[entry["id"]] = (meta["visibleName"], meta["parent"], meta["type"])
+        return names
+
+    # --- the transport --------------------------------------------------
+
+    def request(self, method, url, headers=None, timeout=None, data=None, json=None):
+        from rm_mcp.clients.cloud import blob_hash, crc32c_header
+
+        headers = headers or {}
+        name = headers.get("rm-filename")
+
+        if url.endswith("/sync/v4/root"):
+            return FakeResponse(
+                text=_json.dumps({"hash": self.root_hash, "generation": self.generation})
+            )
+
+        if url.endswith("/sync/v3/root"):
+            assert name == "roothash", "root update must name roothash"
+            self.root_updates += 1
+            if self.conflict_once:
+                self.conflict_once = False
+                return FakeResponse(status_code=412, text="conflict")
+            if json["generation"] != self.generation:
+                return FakeResponse(status_code=412, text="generation conflict")
+            if json["hash"] not in self.blobs:
+                return FakeResponse(status_code=400, text="root blob not uploaded")
+            self.root_hash = json["hash"]
+            self.generation += 1
+            return FakeResponse(
+                text=_json.dumps({"hash": self.root_hash, "generation": self.generation})
+            )
+
+        digest = url.rsplit("/", 1)[-1]
+
+        if method == "PUT":
+            if not name or not name.endswith(
+                (".docSchema", ".metadata", ".content", ".pagedata", ".rm", ".pdf", ".epub")
+            ):
+                return FakeResponse(status_code=400, text="unexpected 'rm-filename' http header")
+            if headers.get("x-goog-hash") != crc32c_header(data):
+                return FakeResponse(status_code=400, text="missing checksum")
+            if blob_hash(data) != digest:
+                return FakeResponse(status_code=400, text="hash does not match body")
+            self.blobs[digest] = data
+            self.uploads.append(name)
+            return FakeResponse(status_code=200)
+
+        if not name:
+            return FakeResponse(status_code=400, text="unexpected 'rm-filename' http header")
+        if digest not in self.blobs:
+            return FakeResponse(status_code=404, text="not found")
+        return FakeResponse(content=self.blobs[digest])
+
+    def mount(self, *a, **k):
+        pass
+
+
+def make_client(cloud: FakeCloud):
+    from rm_mcp.clients.cloud import RemarkableClient
+
+    client = RemarkableClient(device_token="d", user_token="u")
+    client._session = cloud
+    return client
+
+
+LIBRARY = [
+    ("folder-work", "Work", "", "CollectionType"),
+    ("folder-arch", "Archive", "", "CollectionType"),
+    ("doc-notes", "Meeting Notes", "folder-work", "DocumentType"),
+    ("doc-loose", "Loose Note", "", "DocumentType"),
+]
+
+
+class TestLibraryWriter:
+    def setup_cloud(self):
+        from rm_mcp.clients.organize import LibraryWriter
+
+        cloud = FakeCloud()
+        cloud.seed(LIBRARY)
+        return cloud, LibraryWriter(make_client(cloud))
+
+    def test_rename_changes_only_the_target(self):
+        cloud, writer = self.setup_cloud()
+        before = cloud.visible_names()
+
+        result = writer.rename("doc-notes", "Q3 Planning")
+
+        after = cloud.visible_names()
+        assert after["doc-notes"][0] == "Q3 Planning"
+        assert result["previous_root"] != result["root"]
+        # every other document is byte-identical
+        for doc_id in before:
+            if doc_id != "doc-notes":
+                assert after[doc_id] == before[doc_id]
+
+    def test_rename_preserves_parent_and_type(self):
+        cloud, writer = self.setup_cloud()
+        writer.rename("doc-notes", "Renamed")
+        name, parent, doc_type = cloud.visible_names()["doc-notes"]
+        assert (parent, doc_type) == ("folder-work", "DocumentType")
+
+    def test_move_changes_parent_only(self):
+        cloud, writer = self.setup_cloud()
+        writer.move("doc-notes", "folder-arch")
+        name, parent, _t = cloud.visible_names()["doc-notes"]
+        assert (name, parent) == ("Meeting Notes", "folder-arch")
+
+    def test_move_to_top_level(self):
+        cloud, writer = self.setup_cloud()
+        writer.move("doc-notes", "")
+        assert cloud.visible_names()["doc-notes"][1] == ""
+
+    def test_create_folder_appears_in_the_library(self):
+        cloud, writer = self.setup_cloud()
+        result = writer.create_folder("Receipts", "folder-work")
+        names = cloud.visible_names()
+        assert names[result["folder_id"]] == ("Receipts", "folder-work", "CollectionType")
+        assert len(names) == len(LIBRARY) + 1
+
+    def test_the_previous_root_still_describes_the_old_library(self):
+        """The returned previous_root is a complete, valid snapshot."""
+        from rm_mcp.clients.cloud import parse_index
+
+        cloud, writer = self.setup_cloud()
+        result = writer.rename("doc-notes", "Changed")
+
+        # The old root blob is still there and still parses
+        old_root = parse_index(cloud.blobs[result["previous_root"]])
+        assert len(old_root) == len(LIBRARY)
+        # Pointing the library back at it restores the old name
+        cloud.root_hash = result["previous_root"]
+        assert cloud.visible_names()["doc-notes"][0] == "Meeting Notes"
+
+    def test_uploads_are_content_addressed_and_checksummed(self):
+        """The fake rejects a wrong hash or checksum, so passing proves both."""
+        cloud, writer = self.setup_cloud()
+        writer.rename("doc-notes", "Verified")
+        assert cloud.uploads  # metadata, doc index, root index
+        assert any(u.endswith(".metadata") for u in cloud.uploads)
+        assert any(u.endswith(".docSchema") for u in cloud.uploads)
+
+    def test_generation_conflict_is_retried(self):
+        cloud, writer = self.setup_cloud()
+        cloud.conflict_once = True
+
+        writer.rename("doc-notes", "After Conflict")
+
+        assert cloud.root_updates == 2  # rejected once, then succeeded
+        assert cloud.visible_names()["doc-notes"][0] == "After Conflict"
+
+    def test_a_stale_generation_is_rejected_not_overwritten(self):
+        """A write based on an old generation must not clobber a newer one."""
+        from rm_mcp.clients.cloud import RootConflict
+
+        cloud, writer = self.setup_cloud()
+        stale_generation = cloud.generation
+        # Someone else changes the library first
+        writer.rename("doc-loose", "Changed Elsewhere")
+
+        root_entries = writer.client.get_index(cloud.root_hash, ".")
+        with pytest.raises(RootConflict):
+            writer._commit(root_entries, stale_generation)
+        # The other change survived
+        assert cloud.visible_names()["doc-loose"][0] == "Changed Elsewhere"
+
+    def test_unknown_document_is_refused(self):
+        cloud, writer = self.setup_cloud()
+        with pytest.raises(RuntimeError, match="not in the library index"):
+            writer.rename("does-not-exist", "Nope")
+
+    def test_round_trip_through_the_writer_is_stable(self):
+        """Renaming to the same name leaves the library semantically identical."""
+        cloud, writer = self.setup_cloud()
+        before = cloud.visible_names()
+        writer.rename("doc-notes", "Meeting Notes")
+        after = cloud.visible_names()
+        assert {k: (v[0], v[1], v[2]) for k, v in after.items()} == {
+            k: (v[0], v[1], v[2]) for k, v in before.items()
+        }
+
+
+class TestOrganizingTools:
+    """The MCP tools on top of the writer."""
+
+    def setup_cloud(self):
+        cloud = FakeCloud()
+        cloud.seed(LIBRARY)
+        return cloud, make_client(cloud)
+
+    def library(self, client):
+        docs = client.get_meta_items()
+        return patch.object(_helpers, "get_cached_collection", lambda: (client, docs))
+
+    async def test_rename_tool(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_rename", item="Meeting Notes", new_name="Q3 Planning")
+        assert data["renamed"] is True
+        assert cloud.visible_names()["doc-notes"][0] == "Q3 Planning"
+
+    async def test_rename_rejects_a_path_as_a_name(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_rename", item="Meeting Notes", new_name="/Work/Elsewhere")
+        assert data["_error"]["type"] == "invalid_name"
+        assert cloud.visible_names()["doc-notes"][0] == "Meeting Notes"
+
+    async def test_rename_rejects_an_empty_name(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_rename", item="Meeting Notes", new_name="   ")
+        assert data["_error"]["type"] == "invalid_name"
+
+    async def test_move_tool(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_move", item="Loose Note", destination="/Archive")
+        assert data["moved"] is True
+        assert cloud.visible_names()["doc-loose"][1] == "folder-arch"
+
+    async def test_move_to_root(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_move", item="/Work/Meeting Notes", destination="/")
+        assert data["moved"] is True
+        assert cloud.visible_names()["doc-notes"][1] == ""
+
+    async def test_move_into_a_document_is_refused(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_move", item="Loose Note", destination="Meeting Notes")
+        assert data["_error"]["type"] == "not_found"
+        assert cloud.visible_names()["doc-loose"][1] == ""
+
+    async def test_move_a_folder_into_itself_is_refused(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_move", item="Work", destination="/Work")
+        assert data["_error"]["type"] == "invalid_move"
+
+    async def test_move_that_changes_nothing_is_reported(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_move", item="Meeting Notes", destination="/Work")
+        assert data["_error"]["type"] == "already_there"
+        assert cloud.root_updates == 0
+
+    async def test_create_folder_tool(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_create_folder", path="/Work/Receipts")
+        assert data["created"] is True
+        assert data["path"] == "/Work/Receipts"
+        assert ("Receipts", "folder-work", "CollectionType") in cloud.visible_names().values()
+
+    async def test_create_folder_at_top_level(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_create_folder", path="Inbox")
+        assert data["path"] == "/Inbox"
+        assert ("Inbox", "", "CollectionType") in cloud.visible_names().values()
+
+    async def test_create_duplicate_folder_is_refused(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_create_folder", path="Work")
+        assert data["_error"]["type"] == "already_exists"
+        assert cloud.root_updates == 0
+
+    async def test_create_folder_with_missing_parent_is_refused(self):
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_create_folder", path="/Nope/Deep")
+        assert data["_error"]["type"] == "not_found"
+        assert cloud.root_updates == 0
+
+    async def test_read_only_mode_blocks_every_write(self, monkeypatch):
+        monkeypatch.setenv("REMARKABLE_READ_ONLY", "1")
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            for tool, kwargs in [
+                ("remarkable_rename", {"item": "Loose Note", "new_name": "X"}),
+                ("remarkable_move", {"item": "Loose Note", "destination": "/Work"}),
+                ("remarkable_create_folder", {"path": "New"}),
+            ]:
+                data = await call(tool, **kwargs)
+                assert data["_error"]["type"] == "writes_disabled"
+        assert cloud.root_updates == 0
+
+
+class TestWritesRespectRootPath:
+    """A configured root path confines writes as well as reads."""
+
+    def setup_cloud(self):
+        cloud = FakeCloud()
+        cloud.seed(
+            [
+                ("folder-work", "Work", "", "CollectionType"),
+                ("folder-priv", "Personal", "", "CollectionType"),
+                ("doc-secret", "Private Diary", "folder-priv", "DocumentType"),
+                ("doc-work", "Report", "folder-work", "DocumentType"),
+            ]
+        )
+        return cloud, make_client(cloud)
+
+    def library(self, client):
+        docs = client.get_meta_items()
+        return patch.object(_helpers, "get_cached_collection", lambda: (client, docs))
+
+    async def test_cannot_rename_outside_the_root(self, monkeypatch):
+        monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_rename", item="Private Diary", new_name="Exposed")
+        assert data["_error"]["type"] == "not_found"
+        assert cloud.visible_names()["doc-secret"][0] == "Private Diary"
+        assert cloud.root_updates == 0
+
+    async def test_cannot_move_something_outside_the_root(self, monkeypatch):
+        monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_move", item="Private Diary", destination="/")
+        assert data["_error"]["type"] == "not_found"
+        assert cloud.root_updates == 0
+
+    async def test_cannot_move_into_a_folder_outside_the_root(self, monkeypatch):
+        monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_move", item="Report", destination="/Personal")
+        assert data["_error"]["type"] == "not_found"
+        assert cloud.visible_names()["doc-work"][1] == "folder-work"
+
+    async def test_can_rename_inside_the_root(self, monkeypatch):
+        monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_rename", item="Report", new_name="Final Report")
+        assert data["renamed"] is True
+        assert cloud.visible_names()["doc-work"][0] == "Final Report"

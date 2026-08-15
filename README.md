@@ -13,6 +13,7 @@ Your reMarkable tablet is a powerful tool for thinking, note-taking, and researc
 - **Handwriting OCR** — Convert handwritten notes to searchable text
 - **PDF & EPUB support** — Extract text from documents, plus your annotations
 - **Smart search** — Find content across your entire library
+- **Organise your library** — Rename, move, and create folders (nothing is ever deleted)
 - **Second brain integration** — Use with Obsidian, note-taking apps, or any AI workflow
 
 Whether you're researching, writing, or developing ideas, rm-mcp lets you leverage everything on your reMarkable through AI.
@@ -254,6 +255,7 @@ Default is `#FBFBFB` (reMarkable paper color). This affects both the `remarkable
 |----------|---------|-------------|
 | `REMARKABLE_TOKEN` | *(required)* | Auth token from `uvx rm-mcp --setup` |
 | `REMARKABLE_ROOT_PATH` | `/` | Limit access to a specific folder |
+| `REMARKABLE_READ_ONLY` | *(off)* | Set to `1` to disable renaming, moving and creating folders |
 | `REMARKABLE_OCR_BACKEND` | `sampling` | OCR backend (`sampling`) |
 | `REMARKABLE_BACKGROUND_COLOR` | `#FBFBFB` | Background color for rendered images (`#RRGGBB` or `#RRGGBBAA`) |
 | `REMARKABLE_CACHE_TTL` | `60` | Collection cache TTL in seconds |

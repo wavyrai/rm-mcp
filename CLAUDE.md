@@ -26,6 +26,9 @@ rm_mcp/                   # Main package
   capabilities.py         # Client capability detection
   tools/                  # Tool implementations (one file per tool)
     read.py, browse.py, search.py, recent.py, image.py, status.py
+    organize.py           # rename / move / create folder (the only writes)
+  clients/
+    organize.py           # Merkle-tree mutation + root commit
   extract/                # Content extraction
     notebook.py, pdf.py, epub.py, render.py
   ocr/                    # OCR backends
@@ -136,7 +139,7 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 - Line length: 100 (ruff)
 - Ruff rules: E, F, W, I
 - Async: all tool handlers are async, pytest uses `asyncio_mode = "auto"`
-- All tools are read-only and idempotent
+- Reading tools are read-only and idempotent; only `tools/organize.py` writes
 
 ## Architecture rules
 
@@ -148,6 +151,17 @@ These are invariants, not preferences — each one exists because breaking it ca
 - **Every render/download cache key includes the document hash.** Keys without it serve stale content after a document changes; keys without background/format serve the wrong variant.
 - **Config comes from `config.env_int`/`env_bool`.** Bare `int(os.environ[...])` at import time turns a typo in a client config into an unexplained startup crash.
 - **`index.upsert_page`/`store_extraction_result` must ensure the parent row exists** — `pages` has a foreign key onto `documents`.
+
+## Writing to the library
+
+`clients/organize.py` is the only code that mutates anything. The rules it relies on, all verified against the live API:
+
+- **Every hash is `sha256` of the blob's exact bytes** — for file blobs, document indexes and the root index alike. `serialize_index` must therefore reproduce the server's formatting byte-for-byte; it is verified against real indexes in the tests.
+- **Index header line**: `0:<owner>:<count>:<total_size>`, where owner is `.` for the root and the document UUID for a document index. Root entries use type `0`, `subfiles` = number of files, `size` = their total.
+- **Uploads need both headers**: `rm-filename` (recognised extension) and `x-goog-hash: crc32c=<base64>`. Missing the checksum gives 400.
+- **The root PUT is the only step that changes anything.** Upload everything first; a failure before the commit leaves the library untouched.
+- **Always pass the generation you read.** It is the optimistic-concurrency token — without it a concurrent tablet edit is silently overwritten.
+- **Never add a delete.** Nothing in this codebase removes documents; keep it that way unless explicitly asked.
 
 ## Gotchas
 

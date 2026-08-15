@@ -109,9 +109,22 @@ class TestMCPServerInitialization:
 
     @pytest.mark.asyncio
     async def test_tools_count(self):
-        """Test that we have exactly 6 intent-based tools."""
+        """Test the full tool set: 6 reading tools plus 3 organising tools."""
         tools = await mcp.list_tools()
-        assert len(tools) == 6, f"Expected 6 tools, got {len(tools)}"
+        assert len(tools) == 9, f"Expected 9 tools, got {len(tools)}"
+
+    @pytest.mark.asyncio
+    async def test_only_organizing_tools_are_writes(self):
+        """Everything except rename/move/create_folder must be read-only."""
+        tools = await mcp.list_tools()
+        writers = {t.name for t in tools if not t.annotations.readOnlyHint}
+        assert writers == {
+            "remarkable_rename",
+            "remarkable_move",
+            "remarkable_create_folder",
+        }
+        # No tool is allowed to advertise itself as destructive
+        assert not any(t.annotations.destructiveHint for t in tools)
 
     @pytest.mark.asyncio
     async def test_tool_schemas(self):
@@ -736,7 +749,7 @@ class TestE2E:
         """Test that server can list all tools (e2e)."""
         tools = await mcp.list_tools()
 
-        assert len(tools) == 6
+        assert len(tools) == 9
 
         # Check each tool has required properties and starts with remarkable_
         for tool in tools:
