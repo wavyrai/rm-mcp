@@ -81,9 +81,12 @@ class LibraryWriter:
         doc_entries = self.client.get_index(root_entry["hash"], doc_id)
         metadata, meta_filename = self._read_metadata(doc_entries)
 
+        # `lastModified` is deliberately left alone. It answers "when did I
+        # last work in this document", and renaming or moving is not that —
+        # bumping it would flatten the recently-used ordering for every item
+        # touched in a bulk reorganisation. Sync does not depend on it: the
+        # tablet picks up the change because the document's hash changed.
         mutate(metadata)
-        # The tablet uses this to decide which side of a sync is newer.
-        metadata["lastModified"] = str(int(time.time() * 1000))
 
         meta_body = serialize_metadata(metadata)
         meta_hash = self.client.upload_blob(meta_body, meta_filename)

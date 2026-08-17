@@ -1178,6 +1178,18 @@ class FakeCloud:
                     names[entry["id"]] = (meta["visibleName"], meta["parent"], meta["type"])
         return names
 
+    def metadata_of(self, doc_id):
+        """Full metadata dict for one document, read back from the tree."""
+        from rm_mcp.clients.cloud import parse_index
+
+        for entry in parse_index(self.blobs[self.root_hash]):
+            if entry["id"] != doc_id:
+                continue
+            for f in parse_index(self.blobs[entry["hash"]]):
+                if f["id"].endswith(".metadata"):
+                    return _json.loads(self.blobs[f["hash"]])
+        return None
+
     # --- the transport --------------------------------------------------
 
     def request(self, method, url, headers=None, timeout=None, data=None, json=None):
@@ -1275,6 +1287,33 @@ class TestLibraryWriter:
         writer.rename("doc-notes", "Renamed")
         name, parent, doc_type = cloud.visible_names()["doc-notes"]
         assert (parent, doc_type) == ("folder-work", "DocumentType")
+
+    def test_rename_does_not_touch_last_modified(self):
+        """Renaming is not working on a document, so its timestamp must survive.
+
+        Bumping it would flatten the recently-used ordering for every item
+        touched in a bulk reorganisation.
+        """
+        cloud, writer = self.setup_cloud()
+        before = cloud.metadata_of("doc-notes")["lastModified"]
+        writer.rename("doc-notes", "Renamed")
+        assert cloud.metadata_of("doc-notes")["lastModified"] == before
+
+    def test_move_does_not_touch_last_modified(self):
+        cloud, writer = self.setup_cloud()
+        before = cloud.metadata_of("doc-notes")["lastModified"]
+        writer.move("doc-notes", "folder-arch")
+        assert cloud.metadata_of("doc-notes")["lastModified"] == before
+
+    def test_rename_changes_nothing_but_the_name(self):
+        """Every other metadata field is byte-for-byte what it was."""
+        cloud, writer = self.setup_cloud()
+        before = cloud.metadata_of("doc-notes")
+        writer.rename("doc-notes", "Renamed")
+        after = cloud.metadata_of("doc-notes")
+        assert after.pop("visibleName") == "Renamed"
+        before.pop("visibleName")
+        assert after == before
 
     def test_move_changes_parent_only(self):
         cloud, writer = self.setup_cloud()

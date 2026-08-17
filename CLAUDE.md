@@ -162,6 +162,8 @@ These are invariants, not preferences — each one exists because breaking it ca
 - **The root PUT is the only step that changes anything.** Upload everything first; a failure before the commit leaves the library untouched.
 - **Always pass the generation you read.** It is the optimistic-concurrency token — without it a concurrent tablet edit is silently overwritten.
 - **Never add a delete.** Nothing in this codebase removes documents; keep it that way unless explicitly asked.
+- **Rename and move must not touch `lastModified`.** It means "when did I last work in this"; bumping it on a bulk reorganisation flattens the recently-used ordering for everything touched. Sync does not need it — the tablet sees the change because the document hash changed. Only `create_folder` sets a fresh timestamp.
+- **File type comes from the blob list, not the name.** Most documents carry no extension in their visible name; a `.pdf`/`.epub` blob in `doc.files` is authoritative.
 
 ## Gotchas
 
