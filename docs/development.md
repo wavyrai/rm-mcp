@@ -35,25 +35,24 @@ rm-mcp/
 │   ├── models.py          # Document/Folder dataclasses
 │   ├── paths.py           # Path utilities & root path filtering
 │   ├── index.py           # SQLite FTS5 full-text search index
-│   ├── cache.py           # Multi-layer caching
-│   ├── responses.py       # Response formatting
-│   ├── resources.py       # MCP resources
+│   ├── cache.py           # Collection cache, hash-keyed page transcripts
+│   ├── library.py         # Stable-ID view of the collection
+│   ├── reader.py          # Read side: resolve ids, pages, find/list/read/view logic
+│   ├── loader.py          # Startup: load the library, index page text in the background
+│   ├── responses.py       # JSON responses of the organising tools
+│   ├── resources.py       # Resource templates remarkable://doc/{id}[/page/{n}.png]
 │   ├── prompts.py         # MCP prompts
-│   ├── capabilities.py    # Client capability detection
-│   ├── tools/             # Tool implementations
-│   │   ├── read.py        # remarkable_read
-│   │   ├── browse.py      # remarkable_browse
-│   │   ├── search.py      # remarkable_search
-│   │   ├── recent.py      # remarkable_recent
-│   │   ├── image.py       # remarkable_image
-│   │   └── status.py      # remarkable_status
+│   ├── tools/             # Tool registration (one file per tool)
+│   │   ├── find.py, listing.py, read.py, view.py, annotations.py
+│   │   ├── transcript.py  # remarkable_save_transcript (local index only)
+│   │   ├── status.py, organize.py
+│   │   ├── schemas.py     # Structured output models (outputSchema)
+│   │   └── deprecated.py  # 0.7 tool names as thin aliases
 │   ├── extract/           # Content extraction
-│   │   ├── notebook.py    # .rm file parsing
-│   │   ├── pdf.py         # PDF text extraction
-│   │   ├── epub.py        # EPUB text extraction
+│   │   ├── pages.py       # .content page plan: tablet page → .rm + source page
+│   │   ├── document.py    # Per-page text, highlights, ink, content hash
+│   │   ├── notebook.py    # Typed text of one .rm page, page hashes
 │   │   └── render.py      # Page rendering (PNG/SVG)
-│   ├── ocr/               # OCR backends
-│   │   └── sampling.py    # MCP sampling-based OCR
 │   └── clients/
 │       └── cloud.py       # reMarkable Cloud API v3/v4 client
 ├── tests/                 # Test suite + fixtures/
@@ -186,13 +185,10 @@ The workflow automatically:
 | `requests` | HTTP client for reMarkable Cloud API |
 | `rmscene` | Native .rm file parser (text extraction, rendering) |
 | `pymupdf` | PDF text extraction; draws pages to PNG/SVG |
-| `ebooklib` | EPUB text extraction |
 | `Pillow` | Image processing |
-| `beautifulsoup4` | HTML/XML parsing for EPUBs |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `REMARKABLE_TOKEN` | Cloud API authentication token |
-| `REMARKABLE_OCR_BACKEND` | OCR backend: `sampling` (default, uses client LLM) |

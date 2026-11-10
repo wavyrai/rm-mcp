@@ -127,8 +127,6 @@ rm-mcp/
 │   │   ├── pdf.py         # PDF text extraction
 │   │   ├── epub.py        # EPUB text extraction
 │   │   └── render.py      # Page rendering (PNG/SVG)
-│   ├── ocr/
-│   │   └── sampling.py    # MCP sampling-based OCR
 │   └── tools/             # MCP tool implementations
 │       ├── _helpers.py    # Shared helpers and re-exports
 │       ├── browse.py
@@ -200,7 +198,6 @@ def remarkable_example(param: str) -> str:
 
 - `REMARKABLE_TOKEN` - Authentication token (from `uvx rm-mcp --setup`)
 - `REMARKABLE_ROOT_PATH` - Limit access to a specific folder (default: `/`)
-- `REMARKABLE_OCR_BACKEND` - OCR backend, `sampling` (default)
 - `REMARKABLE_BACKGROUND_COLOR` - Background for rendered images (default: `#FBFBFB`)
 - `REMARKABLE_CACHE_TTL` - Collection cache TTL in seconds (default: `60`)
 - `REMARKABLE_COMPACT` - Set to `1` to omit hints globally

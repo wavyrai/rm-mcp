@@ -1,6 +1,6 @@
 # reMarkable MCP Server
 
-Unlock the full potential of your reMarkable tablet as a **second brain** for AI assistants. This MCP server lets Claude, VS Code Copilot, and other AI tools read, search, and traverse your entire reMarkable library — including handwritten notes via OCR.
+Unlock the full potential of your reMarkable tablet as a **second brain** for AI assistants. This MCP server lets Claude, VS Code Copilot, and other AI tools read, search, and traverse your entire reMarkable library — including handwritten notes, which the assistant reads from page images and can save as searchable transcripts.
 
 <!-- mcp-name: io.github.wavyrai/rm-mcp -->
 
@@ -10,7 +10,7 @@ Your reMarkable tablet is a powerful tool for thinking, note-taking, and researc
 
 - **Full library access** — Browse folders, search documents, read any file
 - **Typed text extraction** — Native support for Type Folio and typed annotations
-- **Handwriting OCR** — Convert handwritten notes to searchable text
+- **Handwriting** — The assistant reads page images and saves transcripts, which then become searchable
 - **PDF & EPUB support** — Extract text from documents, plus your annotations
 - **Smart search** — Find content across your entire library
 - **Organise your library** — Rename, move, and create folders (nothing is ever deleted)
@@ -51,7 +51,6 @@ uvx rm-mcp --register YOUR_CODE
 ```bash
 claude mcp add remarkable \
   -e REMARKABLE_TOKEN='<paste token from step 2>' \
-  -e REMARKABLE_OCR_BACKEND=sampling \
   -- uvx rm-mcp@latest
 ```
 
@@ -95,101 +94,79 @@ AI assistants use the tools to read documents, search content, and more:
 
 | Tool | Description |
 |------|-------------|
-| `remarkable_read` | Read and extract text from documents (with pagination and search) |
-| `remarkable_browse` | Navigate folders in your library |
-| `remarkable_search` | Search content across multiple documents |
-| `remarkable_recent` | Get recently modified documents |
-| `remarkable_status` | Check connection status |
-| `remarkable_image` | Get PNG/SVG images of pages (supports OCR via sampling) |
+| `remarkable_find` | Search names, typed text, PDF/EPUB text, highlights and saved transcripts; no query lists recent documents |
+| `remarkable_list` | The folder tree with ids, types, page counts and dates (paged) |
+| `remarkable_read` | Text per tablet page; marks handwritten pages that have no transcript yet |
+| `remarkable_view` | Page images (PNG, opaque paper background), up to 4 pages per call |
+| `remarkable_annotations` | Highlights and the pages that carry handwriting |
+| `remarkable_save_transcript` | Store the assistant's transcript of a handwritten page (local index only) |
+| `remarkable_status` | Connection, index and settings |
+| `remarkable_rename` / `remarkable_move` / `remarkable_create_folder` | Organise the library (never deletes) |
 
-All tools are **read-only** and return structured JSON with hints for next actions.
+Documents are addressed by a stable **id**: every result carries it, and paths
+or names are accepted wherever an id is. Page numbers are tablet pages, so a
+page inserted into a PDF counts. Every tool except `remarkable_view` returns
+structured output with an `outputSchema`.
+
+`remarkable_search`, `remarkable_browse`, `remarkable_recent` and
+`remarkable_image` still answer for one release as deprecated aliases.
 
 📖 **[Full Tools Documentation](docs/tools.md)**
-
-### Smart Features
-
-- **Multi-page read** — Read all pages at once with `pages="all"`, or a range like `pages="1-3"`
-- **Grep auto-redirect** — `grep` automatically finds and jumps to the matching page
-- **Auto-redirect** — Browsing a document path returns its content automatically
-- **Auto-OCR** — Notebooks with no typed text automatically enable OCR (opt out with `auto_ocr=False`)
-- **Full-text search** — Reading a document indexes it for fast future searches
-- **Compact mode** — Use `compact_output=True` to reduce token usage in responses
-- **Batch search** — Search across multiple documents in one call
-- **Vision support** — Get page images for visual context (diagrams, mockups, sketches)
-- **Sampling OCR** — Use client's AI for OCR on images (no API key needed)
 
 ### Example Usage
 
 ```python
-# Read a document
-remarkable_read("Meeting Notes")
+# What did I work on recently?
+remarkable_find()
 
-# Read all pages at once
-remarkable_read("Meeting Notes", pages="all")
+# Find a topic across names, text, highlights and transcripts
+remarkable_find(query="quarterly budget", type="notebook")
 
-# Read a range of pages
-remarkable_read("Research Paper", pages="1-3")
+# Browse a folder, two levels deep
+remarkable_list(folder="/Work", depth=2)
 
-# Search for keywords (auto-redirects to matching page)
-remarkable_read("Project Plan", grep="deadline")
+# Read pages 1-5 (ids come from find/list; a path also works)
+remarkable_read(id="/Work/Standup", pages="1-5")
 
-# Enable OCR for handwritten notes
-remarkable_read("Journal", include_ocr=True)
-
-# Browse your library
-remarkable_browse("/Work/Projects")
-
-# Search across documents
-remarkable_search("meeting", grep="action items")
-
-# Get recent documents with previews
-remarkable_recent(limit=5, include_preview=True)
-
-# Get a page image
-remarkable_image("UI Mockup", page=1)
-
-# Get image with OCR text extraction
-remarkable_image("Handwritten Notes", include_ocr=True)
+# Look at a handwritten page, then keep what it says
+remarkable_view(id="5f0c…", pages="2")
+remarkable_save_transcript(id="5f0c…", page=2, text="Ship the fixtures by Friday")
 ```
 
 ---
 
 ## Resources
 
-Documents are automatically registered as MCP resources:
+Resource templates resolve live against the current library:
 
-| URI Scheme | Description |
-|------------|-------------|
-| `remarkable:///{path}.txt` | Extracted text content |
-| `remarkableimg:///{path}.page-{N}.png` | PNG image of page N (notebooks only) |
-| `remarkablesvg:///{path}.page-{N}.svg` | SVG vector image of page N (notebooks only) |
+| URI | Description |
+|-----|-------------|
+| `remarkable://doc/{id}` | The document's text, page by page, with saved transcripts |
+| `remarkable://doc/{id}/page/{n}.png` | Tablet page n as a PNG |
 
 📖 **[Full Resources Documentation](docs/resources.md)**
 
+## Prompts
+
+| Prompt | What it does |
+|--------|--------------|
+| `transcribe_notebook` | Turn a notebook into Markdown, saving each handwritten page's transcript |
+| `weekly_review` | Summarise the past week's notes with action items |
+| `find_topic` | Gather every note, highlight and page about a topic |
+
 ---
 
-## OCR for Handwriting
+## Handwriting
 
-rm-mcp uses **sampling OCR** — your MCP client's AI model extracts text from handwritten notes. No additional API keys or services needed.
+rm-mcp does not run OCR. Your assistant already reads images: `remarkable_read`
+marks handwritten pages, `remarkable_view` shows them, and
+`remarkable_save_transcript` keeps what the assistant read. The transcript is
+stored in the local index under the page's content hash, so search and read
+include it until that page is edited on the tablet.
 
-### How It Works
-
-When you use `include_ocr=True`, rm-mcp sends page images to your client's LLM (Claude, GPT-4, etc.) via MCP sampling. The model reads the handwriting and returns the text.
-
-### Usage
-
-```python
-# OCR on a page image
-remarkable_image("Handwritten Notes", include_ocr=True)
-
-# OCR when reading a notebook
-remarkable_read("Journal", include_ocr=True)
-```
-
-### Requirements
-
-- Your MCP client must support the **sampling** capability (VS Code + Copilot, Claude Desktop, etc.)
-- `REMARKABLE_OCR_BACKEND=sampling` (this is the default)
+Earlier versions used MCP sampling for OCR. Sampling is deprecated and Claude
+clients do not support it, so it was removed; transcripts it produced are still
+read.
 
 ---
 
@@ -215,8 +192,8 @@ Limit the MCP server to a specific folder on your reMarkable. All operations wil
 ```
 
 With this configuration:
-- `remarkable_browse("/")` shows contents of `/Work`
-- `remarkable_browse("/Projects")` shows `/Work/Projects`
+- `remarkable_list()` shows the contents of `/Work`
+- `remarkable_list(folder="/Projects")` shows `/Work/Projects`
 - Documents outside `/Work` are not accessible
 
 Useful for:
@@ -247,7 +224,7 @@ Supported formats:
 - `#RRGGBB` — RGB hex (e.g., `#FFFFFF` for white)
 - `#RRGGBBAA` — RGBA hex (e.g., `#00000000` for transparent)
 
-Default is `#FBFBFB` (reMarkable paper color). This affects both the `remarkable_image` tool and image resources.
+Default is `#FBFBFB` (reMarkable paper color), opaque so ink stays visible in dark-mode clients. This affects `remarkable_view` and the page image resource.
 
 ### All Environment Variables
 
@@ -256,16 +233,14 @@ Default is `#FBFBFB` (reMarkable paper color). This affects both the `remarkable
 | `REMARKABLE_TOKEN` | *(required)* | Auth token from `uvx rm-mcp --setup` |
 | `REMARKABLE_ROOT_PATH` | `/` | Limit access to a specific folder |
 | `REMARKABLE_READ_ONLY` | *(off)* | Set to `1` to disable renaming, moving and creating folders |
-| `REMARKABLE_OCR_BACKEND` | `sampling` | OCR backend (`sampling`) |
 | `REMARKABLE_BACKGROUND_COLOR` | `#FBFBFB` | Background color for rendered images (`#RRGGBB` or `#RRGGBBAA`) |
 | `REMARKABLE_CACHE_TTL` | `60` | Collection cache TTL in seconds |
-| `REMARKABLE_COMPACT` | *(off)* | Set to `1` or `true` to omit hints from responses globally |
-| `REMARKABLE_MAX_OUTPUT_CHARS` | `50000` | Maximum characters in tool responses |
-| `REMARKABLE_PAGE_SIZE` | `8000` | PDF/EPUB page size in characters |
+| `REMARKABLE_COMPACT` | *(off)* | Set to `1` or `true` to omit hints from the organising tools' responses |
+| `REMARKABLE_MAX_OUTPUT_CHARS` | `50000` | Maximum characters of page text per `remarkable_read` call |
 | `REMARKABLE_PARALLEL_WORKERS` | `5` | Parallel workers for metadata fetching |
-| `REMARKABLE_INDEX_CONTENT` | `1` | Set to `0` to disable background indexing of PDF/EPUB text |
+| `REMARKABLE_INDEX_CONTENT` | `1` | Set to `0` to disable background indexing of page text |
 | `REMARKABLE_INDEX_PATH` | `~/.cache/rm-mcp/index.db` | SQLite full-text search index location |
-| `REMARKABLE_INDEX_REBUILD` | *(off)* | Set to `1` to force index rebuild on startup |
+| `REMARKABLE_INDEX_REBUILD` | *(off)* | Set to `1` to clear the search index on startup (saved transcripts are kept) |
 
 Most users only need `REMARKABLE_TOKEN`. The rest are for advanced tuning.
 
@@ -283,7 +258,7 @@ Ask your AI assistant to summarize your recent notes, find action items, or iden
 
 ### Document Search
 
-Find that half-remembered note by searching across your entire library — including handwritten content.
+Find that half-remembered note by searching across your entire library — including handwritten pages once they have a transcript.
 
 ### Knowledge Management
 
@@ -297,7 +272,6 @@ Treat your reMarkable as a second brain that AI can access. Combined with tools 
 |-------|-------------|
 | [Tools Reference](docs/tools.md) | Detailed tool documentation |
 | [Resources Reference](docs/resources.md) | MCP resources documentation |
-| [Capability Negotiation](docs/capabilities.md) | MCP protocol capabilities |
 | [Development](docs/development.md) | Contributing and development setup |
 | [Future Plans](docs/future-plans.md) | Roadmap and planned features |
 

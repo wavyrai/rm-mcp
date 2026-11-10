@@ -20,11 +20,11 @@ Write support requires careful consideration of:
 
 ### Additional OCR Providers ([#25](https://github.com/wavyrai/rm-mcp/issues/25))
 
-OCR currently uses **MCP sampling** — the client's own LLM reads handwriting from page images. No API keys or external services needed.
+rm-mcp runs no OCR: the assistant reads page images from `remarkable_view` and saves transcripts with `remarkable_save_transcript`. MCP sampling OCR was removed in v2 (sampling is deprecated and unsupported by Claude clients).
 
 | Provider | Status | Notes |
 |----------|--------|-------|
-| MCP Sampling | ✅ Implemented | Uses client LLM (Claude, GPT-4, etc.), no API keys |
+| Agent transcripts | ✅ Implemented | The assistant transcribes from page images; stored per page content hash |
 | **Microsoft Azure** | 🔮 Possible | Competitive handwriting OCR |
 | **Local LLaVA** | 🔮 Possible | Fully offline, privacy-focused |
 
