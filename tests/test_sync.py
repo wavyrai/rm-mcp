@@ -63,8 +63,10 @@ class FakeCloud:
         parent: str = "",
         pages: Optional[Dict[str, bytes]] = None,
         folder: bool = False,
+        content: Optional[bytes] = None,
+        extra: Optional[Dict[str, bytes]] = None,
     ) -> None:
-        pages = pages if pages is not None else {"p1": f"strokes of {doc_id}".encode()}
+        pages = pages if pages is not None else {f"p-{doc_id}": f"strokes of {doc_id}".encode()}
         metadata = json.dumps(
             {
                 "visibleName": name,
@@ -73,9 +75,13 @@ class FakeCloud:
                 "lastModified": "1750000000000",
             }
         ).encode()
-        content = json.dumps({"cPages": {"pages": [{"id": pid} for pid in pages]}}).encode()
-        files = [(f"{doc_id}.metadata", metadata), (f"{doc_id}.content", content)]
+        if content is None:
+            content = json.dumps({"cPages": {"pages": [{"id": pid} for pid in pages]}}).encode()
+        files = [(f"{doc_id}.metadata", metadata)]
+        if not folder:
+            files.append((f"{doc_id}.content", content))
         files += [(f"{doc_id}/{pid}.rm", data) for pid, data in pages.items()]
+        files += list((extra or {}).items())
         doc_entries = [
             {"hash": self._put(data), "type": "0", "id": fid, "subfiles": 0, "size": len(data)}
             for fid, data in files
@@ -135,13 +141,21 @@ def blob_url(digest: str) -> str:
     return f"{FILES_URL}/{digest}"
 
 
-def metadata_hash(cloud: FakeCloud, doc_id: str) -> str:
+def file_hash(cloud: FakeCloud, doc_id: str, suffix: str) -> str:
     index = cloud.blobs[cloud.doc_index_hash(doc_id)].decode()
     for line in index.splitlines():
         parts = line.split(":")
-        if len(parts) == 5 and parts[2].endswith(".metadata"):
+        if len(parts) == 5 and parts[2].endswith(suffix):
             return parts[0]
-    raise AssertionError("no metadata entry")
+    raise AssertionError(f"no {suffix} entry")
+
+
+def metadata_hash(cloud: FakeCloud, doc_id: str) -> str:
+    return file_hash(cloud, doc_id, ".metadata")
+
+
+def content_hash(cloud: FakeCloud, doc_id: str) -> str:
+    return file_hash(cloud, doc_id, ".content")
 
 
 def make_library(n: int) -> FakeCloud:
@@ -191,8 +205,8 @@ class TestIncrementalSync:
         docs = client.get_meta_items()
 
         assert len(docs) == 1000
-        # root pointer + root index + (document index + metadata) per document
-        assert cloud.total() == 2 + 2 * 1000
+        # root pointer + root index + (document index, metadata, .content) per document
+        assert cloud.total() == 2 + 3 * 1000
         assert max(cloud.requests.values()) == 1
 
     # Without a blob store too: the diff alone must avoid refetching unchanged
@@ -204,22 +218,23 @@ class TestIncrementalSync:
         client.get_meta_items()
         cloud.reset_counts()
 
-        cloud.set_doc("doc-0500", "Renamed note")
+        cloud.set_doc("doc-0500", "Renamed note", pages={"added": b"new page"})
         cloud.commit()
         docs = client.get_meta_items()
 
         assert by_id(docs)["doc-0500"].name == "Renamed note"
         # The root pointer, the new root index, then only this document's
-        # index and metadata. Nothing for the other 999.
+        # index, metadata and .content. Nothing for the other 999.
         assert cloud.requests == Counter(
             {
                 ROOT_URL: 1,
                 blob_url(cloud.root_hash): 1,
                 blob_url(cloud.doc_index_hash("doc-0500")): 1,
                 blob_url(metadata_hash(cloud, "doc-0500")): 1,
+                blob_url(content_hash(cloud, "doc-0500")): 1,
             }
         )
-        assert cloud.total() <= 4
+        assert cloud.total() <= 5
 
     def test_unchanged_root_costs_one_request(self, tmp_path, state):
         cloud = make_library(50)
@@ -255,7 +270,7 @@ class TestIncrementalSync:
         docs = make_client(cloud, state, tmp_path, blob_dir=None).get_meta_items()
 
         assert by_id(docs)["doc-0003"].name == "Edited while we were down"
-        assert cloud.total() <= 4
+        assert cloud.total() <= 5
 
     def test_deleted_document_disappears(self, tmp_path, state):
         cloud = make_library(20)
@@ -357,6 +372,84 @@ class TestIncrementalSync:
         assert after.hash != before.hash
 
 
+class TestPageCountFromContent:
+    """Sync reads each new or changed document's .content for its page count and type."""
+
+    def sync_one(self, tmp_path, state, content: bytes, extra=None):
+        cloud = FakeCloud()
+        cloud.set_doc("d", "Doc", pages={}, content=content, extra=extra)
+        cloud.commit()
+        client = make_client(cloud, state, tmp_path)
+        return client.get_meta_items()[0]
+
+    def test_cpages_count_skips_deleted_pages(self, tmp_path, state):
+        content = json.dumps(
+            {
+                "cPages": {
+                    "pages": [
+                        {"id": "a"},
+                        {"id": "b", "deleted": {"timestamp": "1:2", "value": 1}},
+                        {"id": "c"},
+                    ]
+                }
+            }
+        ).encode()
+        doc = self.sync_one(tmp_path, state, content)
+        assert doc.page_count == 2
+
+    def test_format_one_page_list(self, tmp_path, state):
+        content = json.dumps({"pages": ["a", "b", "c"], "fileType": "notebook"}).encode()
+        assert self.sync_one(tmp_path, state, content).page_count == 3
+
+    def test_page_count_field(self, tmp_path, state):
+        content = json.dumps({"fileType": "pdf", "pageCount": 7}).encode()
+        doc = self.sync_one(tmp_path, state, content)
+        assert doc.page_count == 7
+        assert doc.file_type == "pdf"
+
+    def test_unknown_page_count_is_none(self, tmp_path, state):
+        assert self.sync_one(tmp_path, state, b"{}").page_count is None
+        assert self.sync_one(tmp_path, state, b"not json").page_count is None
+
+    def test_folders_have_no_content_and_cost_no_request_for_it(self, tmp_path, state):
+        cloud = FakeCloud()
+        cloud.set_doc("f", "Folder", folder=True, pages={})
+        cloud.commit()
+        client = make_client(cloud, state, tmp_path)
+        [folder] = client.get_meta_items()
+        assert folder.page_count is None
+        assert cloud.total() == 4  # root pointer, root index, folder index, metadata
+
+    def test_library_and_list_carry_the_page_count(self, tmp_path, state):
+        from rm_mcp.library import Library
+
+        cloud = FakeCloud()
+        cloud.set_doc("n", "Notes", pages={"p1": b"a", "p2": b"b", "p3": b"c"})
+        cloud.commit()
+        entry = Library(make_client(cloud, state, tmp_path).get_meta_items()).get("n")
+        assert entry.page_count == 3
+
+    def test_records_from_before_page_counts_are_refetched_once(self, tmp_path, state):
+        cloud = make_library(3)
+        make_client(cloud, state, tmp_path).get_meta_items()
+        # Simulate state persisted by the previous version: no content info.
+        root, records = state.load_sync_state()
+        for record in records.values():
+            record.pop("content", None)
+            record.pop("v", None)
+        state.save_sync_state(root, records, [])
+        cloud.reset_counts()
+
+        docs = make_client(cloud, state, tmp_path, blob_dir=None).get_meta_items()
+
+        assert all(d.page_count == 1 for d in docs)
+        # The root pointer and root index, then the three documents again.
+        assert cloud.total() == 2 + 3 * 3
+        cloud.reset_counts()
+        make_client(cloud, state, tmp_path, blob_dir=None).get_meta_items()
+        assert cloud.total() == 1
+
+
 class TestCollectionCacheUsesIncrementalSync:
     def test_incomplete_sync_is_retried_with_an_unchanged_root(self, tmp_path, state, monkeypatch):
         import rm_mcp.api as api_mod
@@ -398,7 +491,7 @@ class TestCollectionCacheUsesIncrementalSync:
             _client, collection = cache_mod.get_cached_collection()
 
             assert by_id(collection)["doc-0100"].name == "Changed"
-            assert cloud.total() <= 4
+            assert cloud.total() <= 5
         finally:
             cache_mod.invalidate_collection_cache()
 

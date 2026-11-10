@@ -5,7 +5,8 @@ tablet page points at a page of the source document, and pages inserted on the
 tablet point at nothing:
 
 - format 2: ``cPages.pages[i].redir.value`` is the 0-based source page; an
-  inserted page has no ``redir``.
+  inserted page has no ``redir``. A page deleted on the tablet stays listed
+  with ``deleted.value`` set and is not a page.
 - format 1: ``pages`` lists the page ids and ``redirectionPageMap[i]`` the
   source page, with ``-1`` for an inserted page. Without the map the pages
   follow the source one to one.
@@ -53,6 +54,11 @@ def _redir_value(entry) -> Optional[int]:
     return None
 
 
+def _deleted(entry: dict) -> bool:
+    flag = entry.get("deleted")
+    return bool(flag.get("value")) if isinstance(flag, dict) else bool(flag)
+
+
 def _read_content(zf: zipfile.ZipFile, names: List[str]) -> dict:
     for name in sorted(names):
         if name.endswith(".content") and "/" not in name:
@@ -85,7 +91,8 @@ def read_page_plan(zf: zipfile.ZipFile) -> PagePlan:
     redirs: List[Optional[int]] = []
     cpages = content.get("cPages")
     if isinstance(cpages, dict) and isinstance(cpages.get("pages"), list):
-        entries = [e for e in cpages["pages"] if isinstance(e, dict)]
+        # A page deleted on the tablet stays in the list, marked deleted.
+        entries = [e for e in cpages["pages"] if isinstance(e, dict) and not _deleted(e)]
         ids = [e.get("id") for e in entries]
         redirs = [_redir_value(e) for e in entries]
     elif isinstance(content.get("pages"), list):

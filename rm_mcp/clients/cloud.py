@@ -144,6 +144,48 @@ def parse_index(content: bytes) -> List[Dict[str, Any]]:
     return entries
 
 
+# Bumped when a sync record gains a derived field; older records are refetched.
+RECORD_VERSION = 2
+
+
+def _is_deleted(page: Dict[str, Any]) -> bool:
+    deleted = page.get("deleted")
+    if isinstance(deleted, dict):
+        return bool(deleted.get("value"))
+    return bool(deleted)
+
+
+def content_info(raw: bytes) -> Dict[str, Any]:
+    """Page count and file type from a document's .content file.
+
+    The page count is the first of: the firmware 3 ``cPages.pages`` list
+    (pages marked deleted excluded), the format 1 ``pages`` list, or a positive
+    ``pageCount``. None when the file says nothing, which is common for a PDF
+    the tablet has not opened yet. An unreadable file gives None, not an error.
+    """
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {"page_count": None, "file_type": None}
+    if not isinstance(data, dict):
+        return {"page_count": None, "file_type": None}
+
+    page_count: Optional[int] = None
+    cpages = data.get("cPages")
+    if isinstance(cpages, dict) and isinstance(cpages.get("pages"), list):
+        pages = [p for p in cpages["pages"] if isinstance(p, dict) and not _is_deleted(p)]
+        page_count = len(pages)
+    elif isinstance(data.get("pages"), list):
+        page_count = len(data["pages"])
+    elif isinstance(data.get("pageCount"), int) and data["pageCount"] > 0:
+        page_count = data["pageCount"]
+
+    file_type = data.get("fileType")
+    if file_type not in ("pdf", "epub", "notebook"):
+        file_type = None
+    return {"page_count": page_count or None, "file_type": file_type}
+
+
 # Sentinel: "use the process-wide default" for the client's blob and state stores.
 _USE_DEFAULT: Any = object()
 
@@ -465,19 +507,29 @@ class RemarkableClient:
         return self._synced_root_hash is not None
 
     def _fetch_record(self, entry: Dict[str, Any]) -> Dict[str, Any]:
-        """Fetch one document's blob index and metadata. Raises on any failure.
+        """Fetch one document's blob index, metadata and .content. Raises on any failure.
 
         A failure must not be papered over: a document returned without its
         metadata would show up under its UUID, and one silently dropped would
-        look deleted.
+        look deleted. The .content (absent for folders) gives the page count
+        and file type without downloading the document.
         """
         doc_id = entry["id"]
         files = self._parse_index(self._get_file(entry["hash"], _index_filename(doc_id)))
         metadata: Dict[str, Any] = {}
+        content: Dict[str, Any] = {"page_count": None, "file_type": None}
         for blob in files:
             if blob["id"].endswith(".metadata"):
                 metadata = json.loads(self._get_file(blob["hash"], blob["id"]).decode("utf-8"))
-        return {"entry": dict(entry), "files": files, "metadata": metadata}
+            elif blob["id"].endswith(".content") and "/" not in blob["id"]:
+                content = content_info(self._get_file(blob["hash"], blob["id"]))
+        return {
+            "v": RECORD_VERSION,
+            "entry": dict(entry),
+            "files": files,
+            "metadata": metadata,
+            "content": content,
+        }
 
     @staticmethod
     def _document_from_record(record: Dict[str, Any], stale: bool) -> Optional[Document]:
@@ -495,6 +547,7 @@ class RemarkableClient:
             except (ValueError, TypeError):
                 pass
 
+        content = record.get("content") or {}
         return Document(
             id=entry["id"],
             hash=entry["hash"],
@@ -507,6 +560,8 @@ class RemarkableClient:
             size=entry.get("size", 0),
             files=list(record.get("files") or []),
             stale=stale,
+            page_count=content.get("page_count"),
+            file_type=content.get("file_type"),
         )
 
     def _load_state_once(self) -> None:
@@ -522,7 +577,8 @@ class RemarkableClient:
             logger.warning("Could not load persisted sync state; doing a full sync", exc_info=True)
             return
         self._records = records
-        self._synced_root_hash = root_hash if records else None
+        current = records and all(r.get("v") == RECORD_VERSION for r in records.values())
+        self._synced_root_hash = root_hash if current else None
         self._rebuild_documents()
 
     def _rebuild_documents(self) -> None:
@@ -565,10 +621,13 @@ class RemarkableClient:
 
         current = {e["id"]: e for e in entries}
         removed = [doc_id for doc_id in self._records if doc_id not in current]
+        # A record from an older version of this client lacks fields this one
+        # derives (the .content page count), so it is refetched once.
         changed = [
             e
             for e in entries
             if self._records.get(e["id"], {}).get("entry", {}).get("hash") != e["hash"]
+            or self._records.get(e["id"], {}).get("v") != RECORD_VERSION
         ]
 
         fetched, failed = self._fetch_records(changed)
@@ -622,8 +681,9 @@ class RemarkableClient:
         The root index lists every document with the hash of its current
         version. Only documents whose hash differs from the last known state
         (kept in memory and persisted in the index database) are fetched, so an
-        unchanged library costs one request and a single edit costs four: the
-        root pointer, the root index, the document's index and its metadata.
+        unchanged library costs one request and a single edit costs at most
+        five: the root pointer, the root index, the document's index, its
+        metadata and its .content (folders have none).
 
         Args:
             limit: Maximum number of documents to return. If None, returns all.

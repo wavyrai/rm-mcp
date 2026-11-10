@@ -101,14 +101,17 @@ def _iso(value: Optional[datetime]) -> Optional[str]:
 
 
 def _page_count(entry: LibraryEntry) -> Optional[int]:
+    # The entry's count comes from the current version's .content (or the index).
+    if entry.page_count is not None:
+        return entry.page_count
     index = _index()
     if index is None:
-        return entry.page_count
+        return None
     try:
-        return index.get_page_count(entry.id) or entry.page_count
+        return index.get_page_count(entry.id)
     except Exception:
         logger.warning("Could not read the page count of %s from the index", entry.id)
-        return entry.page_count
+        return None
 
 
 def describe(snap: Snapshot, entry: LibraryEntry) -> Dict[str, Any]:

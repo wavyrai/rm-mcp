@@ -107,7 +107,12 @@ def get_file_type(client, doc) -> str:
             if lowered.endswith(".epub"):
                 return "epub"
 
-    # Fall back to the visible name when the blob list is unavailable.
+    # Next, the .content file's fileType, read at sync time.
+    content_type = getattr(doc, "file_type", None)
+    if content_type in ("pdf", "epub"):
+        return content_type
+
+    # Fall back to the visible name when neither says.
     name = doc.VissibleName.lower()
     if name.endswith(".pdf"):
         return "pdf"

@@ -38,6 +38,10 @@ class Document:
     # True when the latest version could not be fetched and this is the
     # previous one. The next sync retries it.
     stale: bool = False
+    # From the .content file at sync time: tablet pages (None when it does not
+    # say) and "pdf", "epub" or "notebook" (None when absent).
+    page_count: Optional[int] = None
+    file_type: Optional[str] = None
 
     @property
     def is_folder(self) -> bool:

@@ -466,6 +466,40 @@ async def test_list_sorts_by_modified_and_pages(cloud):
     assert rest["next_cursor"] is None
 
 
+async def test_list_and_find_know_page_counts_before_any_read(cloud):
+    listed = await data("remarkable_list", depth=2)
+    counts = {i["id"]: i["page_count"] for i in listed["items"]}
+    # From each .content at sync time: cPages for notebooks and the annotated PDF.
+    assert counts[NOTEBOOK] == 2
+    assert counts[ANNOTATED] == 4
+    assert counts[HIGHLIGHTED] == 3
+    assert counts[SKETCHES] == 6
+    assert counts[WORK] is None
+    found = await data("remarkable_find", query="Standup")
+    assert found["results"][0]["page_count"] == 2
+
+
+async def test_deleted_pages_are_not_tablet_pages(cloud):
+    content = json.dumps(
+        {
+            "cPages": {
+                "pages": [
+                    {"id": "p-typed"},
+                    {"id": "gone", "deleted": {"timestamp": "1:9", "value": 1}},
+                    {"id": "p-hand"},
+                ]
+            }
+        }
+    ).encode()
+    files = {f"{NOTEBOOK}.content": content, f"{NOTEBOOK}/p-typed.rm": TYPED}
+    files[f"{NOTEBOOK}/p-hand.rm"] = HANDWRITING
+    edit(cloud, NOTEBOOK, "Standup", files, parent=WORK)
+    listed = await data("remarkable_list", folder=WORK)
+    read = await data("remarkable_read", id=NOTEBOOK, pages="1-2")
+    assert listed["items"][0]["page_count"] == read["page_count"] == 2
+    assert read["pages"][1]["handwriting"] is True
+
+
 async def test_list_unknown_folder_is_a_clear_error(cloud):
     with pytest.raises(ToolError) as exc:
         await mcp.call_tool("remarkable_list", {"folder": "/Nope"})

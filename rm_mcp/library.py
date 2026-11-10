@@ -24,7 +24,7 @@ class LibraryEntry:
     kind: str  # "folder", "notebook", "pdf" or "epub"
     hash: str
     modified: Optional[datetime]
-    page_count: Optional[int]  # known once the document has been opened, else None
+    page_count: Optional[int]  # from the synced .content, else the index, else None
     stale: bool = False  # the latest version could not be fetched yet
     parent: str = ""  # parent folder id; "" for the top level, "trash" when trashed
 
@@ -43,6 +43,11 @@ def _known_page_count(doc_id: str) -> Optional[int]:
         return None
 
 
+def _page_count(item) -> Optional[int]:
+    synced = getattr(item, "page_count", None)
+    return synced if isinstance(synced, int) else _known_page_count(item.ID)
+
+
 class Library:
     """Immutable id → entry map over one snapshot of the collection."""
 
@@ -58,7 +63,7 @@ class Library:
                 kind="folder" if item.is_folder else get_file_type(None, item),
                 hash=getattr(item, "hash", "") or "",
                 modified=item.ModifiedClient,
-                page_count=None if item.is_folder else _known_page_count(item.ID),
+                page_count=None if item.is_folder else _page_count(item),
                 stale=bool(getattr(item, "stale", False)),
                 parent=getattr(item, "Parent", "") or "",
             )
