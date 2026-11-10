@@ -36,7 +36,7 @@ def _fresh_collection():
     except Exception as e:
         raise ToolError(f"Could not read the library: {e}")
     if client is None:
-        raise ToolError("Not connected to the reMarkable Cloud. Run: uvx rm-mcp --setup")
+        raise ToolError("Not connected to the reMarkable Cloud. Run: uvx rm-mcp@latest setup")
     return client, items
 
 

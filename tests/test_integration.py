@@ -662,7 +662,7 @@ class TestTokenHandling:
             load_client_from_token(secret)
 
         assert secret not in str(exc.value)
-        assert "rm-mcp --setup" in str(exc.value)
+        assert "rm-mcp@latest setup" in str(exc.value)
 
 
 # =============================================================================

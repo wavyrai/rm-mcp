@@ -22,13 +22,25 @@ def _config() -> StatusConfig:
 
 
 def status() -> StatusResult:
-    from rm_mcp.api import REMARKABLE_TOKEN
+    from rm_mcp import api
     from rm_mcp.index import get_instance
 
-    connection = "REMARKABLE_TOKEN" if REMARKABLE_TOKEN else "~/.rmapi"
+    source = api.current_source()
+    connection = source.describe() if source is not None else "configured client"
     try:
         snap = reader.snapshot()
     except Exception as e:
+        if source is None:
+            return StatusResult(
+                authenticated=False,
+                connection="not signed in",
+                config=_config(),
+                error="Not signed in: no reMarkable token was found.",
+                hint=(
+                    "Run `uvx rm-mcp@latest setup` in a terminal to connect your reMarkable, "
+                    "then call remarkable_status again."
+                ),
+            )
         return StatusResult(
             authenticated=False,
             connection=connection,

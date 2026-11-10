@@ -4,6 +4,24 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """No test reads or writes the real token file, REMARKABLE_TOKEN or ~/.rmapi."""
+    import rm_mcp.api as api_mod
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    monkeypatch.setattr(api_mod, "_client_singleton", None)
+    monkeypatch.setattr(api_mod, "_client_source", None)
+    monkeypatch.setattr(api_mod, "_client_signature", None)
+    yield home
+
+
+@pytest.fixture(autouse=True)
 def _isolated_blob_store(tmp_path, monkeypatch):
     """Point the content-addressed blob store at a per-test directory."""
     from rm_mcp import blobstore

@@ -247,44 +247,10 @@ class TestHelperFunctions:
 
 
 class TestRegistration:
-    """Test registration functionality."""
-
-    @patch("os.close")
-    @patch("os.write")
-    @patch("os.open", return_value=99)
-    @patch("requests.post")
-    def test_register_and_get_token(self, mock_post, mock_os_open, mock_os_write, mock_os_close):
-        """Test registration process."""
-        # Mock successful API response
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.text = "test_device_token_12345"
-        mock_post.return_value = mock_response
-
-        token = register_and_get_token("test_code")
-
-        # Should return JSON with devicetoken
-        import json
-
-        token_data = json.loads(token)
-        assert token_data["devicetoken"] == "test_device_token_12345"
-        assert "usertoken" in token_data
-
-        # Verify API was called
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        assert "webapp-prod.cloud.remarkable.engineering" in call_args[0][0]
-
-        # Verify token was written to ~/.rmapi
-        mock_os_open.assert_called_once()
-        written_path = mock_os_open.call_args[0][0]
-        assert ".rmapi" in written_path
-        mock_os_write.assert_called_once()
+    """Registration saves to rm-mcp's token file (see tests/test_auth.py for the rest)."""
 
     @patch("requests.post")
     def test_register_invalid_code(self, mock_post):
-        """Test registration with invalid/expired code."""
-        # Mock 400 response (invalid code)
         mock_response = Mock()
         mock_response.status_code = 400
         mock_response.text = ""
@@ -292,123 +258,6 @@ class TestRegistration:
 
         with pytest.raises(RuntimeError, match="Registration failed"):
             register_and_get_token("invalid_code")
-
-
-# =============================================================================
-# Test --setup Command
-# =============================================================================
-
-
-class TestSetupCommand:
-    """Test the --setup CLI command."""
-
-    @patch("rm_mcp.api.register_and_get_token")
-    @patch("builtins.input", return_value="abc123")
-    @patch("rm_mcp.cli.webbrowser.open")
-    def test_setup_success(self, mock_browser, mock_input, mock_register, capsys):
-        """Test successful --setup flow."""
-        mock_register.return_value = '{"devicetoken":"tok","usertoken":""}'
-
-        from rm_mcp.cli import _handle_setup
-
-        _handle_setup()
-
-        mock_browser.assert_called_once_with("https://my.remarkable.com/device/apps/connect")
-        mock_register.assert_called_once_with("abc123")
-
-        captured = capsys.readouterr()
-        assert "✓" in captured.out
-        assert "Successfully registered!" in captured.out
-        assert "claude mcp add remarkable" in captured.out
-        assert "claude_desktop_config.json" in captured.out
-        assert "Claude Code" in captured.out
-        assert "Claude Desktop" in captured.out
-
-    @patch("builtins.input", side_effect=KeyboardInterrupt)
-    @patch("rm_mcp.cli.webbrowser.open")
-    def test_setup_cancelled_keyboard_interrupt(self, mock_browser, mock_input):
-        """Test that --setup handles KeyboardInterrupt gracefully."""
-        from rm_mcp.cli import _handle_setup
-
-        with pytest.raises(SystemExit) as exc_info:
-            _handle_setup()
-        assert exc_info.value.code == 0
-
-    @patch("builtins.input", side_effect=EOFError)
-    @patch("rm_mcp.cli.webbrowser.open")
-    def test_setup_cancelled_eof(self, mock_browser, mock_input):
-        """Test that --setup handles EOFError gracefully."""
-        from rm_mcp.cli import _handle_setup
-
-        with pytest.raises(SystemExit) as exc_info:
-            _handle_setup()
-        assert exc_info.value.code == 0
-
-    @patch("builtins.input", return_value="")
-    @patch("rm_mcp.cli.webbrowser.open")
-    def test_setup_empty_code(self, mock_browser, mock_input):
-        """Test that --setup rejects empty code."""
-        from rm_mcp.cli import _handle_setup
-
-        with pytest.raises(SystemExit) as exc_info:
-            _handle_setup()
-        assert exc_info.value.code == 1
-
-    def test_setup_arg_parsing(self):
-        """Test that --setup is recognized by argparse."""
-        import argparse
-
-        # Test that --setup is a valid argument
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--setup", action="store_true")
-        args = parser.parse_args(["--setup"])
-        assert args.setup is True
-
-
-class TestRegisterQuiet:
-    """Test --register CODE --quiet flag."""
-
-    @patch("rm_mcp.api.register_and_get_token")
-    def test_register_quiet_outputs_raw_token(self, mock_register, capsys):
-        """Test that --register CODE --quiet outputs only the raw token JSON."""
-        mock_register.return_value = '{"devicetoken":"tok123","usertoken":""}'
-
-        from rm_mcp.cli import main
-
-        with patch("sys.argv", ["rm-mcp", "--register", "abc123", "--quiet"]):
-            main()
-
-        captured = capsys.readouterr()
-        # Should contain only the raw token, no styling
-        assert captured.out.strip() == '{"devicetoken":"tok123","usertoken":""}'
-        assert "✓" not in captured.out
-        assert "Step" not in captured.out
-        assert "Claude" not in captured.out
-
-    @patch("rm_mcp.api.register_and_get_token")
-    def test_register_without_quiet_has_styling(self, mock_register, capsys):
-        """Test that --register without --quiet still produces styled output."""
-        mock_register.return_value = '{"devicetoken":"tok123","usertoken":""}'
-
-        from rm_mcp.cli import main
-
-        with patch("sys.argv", ["rm-mcp", "--register", "abc123"]):
-            main()
-
-        captured = capsys.readouterr()
-        assert "Successfully registered!" in captured.out
-        assert "claude mcp add remarkable" in captured.out
-
-    def test_quiet_arg_parsing(self):
-        """Test that --quiet is recognized by argparse."""
-        import argparse
-
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--register", metavar="CODE")
-        parser.add_argument("--quiet", action="store_true")
-        args = parser.parse_args(["--register", "code", "--quiet"])
-        assert args.quiet is True
-        assert args.register == "code"
 
 
 # =============================================================================
@@ -431,25 +280,13 @@ class TestUnauthenticatedMode:
         data = result.structured_content
 
         assert data["authenticated"] is False
-        assert "--setup" in data["hint"]
+        assert "rm-mcp@latest setup" in data["hint"]
 
     def test_get_rmapi_returns_none_when_no_token(self):
-        """Test that get_rmapi returns None when no token is configured."""
+        """No token file, no REMARKABLE_TOKEN, no ~/.rmapi (conftest isolates HOME)."""
         import rm_mcp.api as api_mod
 
-        # Save and restore singleton
-        old_singleton = api_mod._client_singleton
-        old_token = api_mod.REMARKABLE_TOKEN
-        try:
-            api_mod._client_singleton = None
-            api_mod.REMARKABLE_TOKEN = None
-
-            with patch("pathlib.Path.exists", return_value=False):
-                result = api_mod.get_rmapi()
-                assert result is None
-        finally:
-            api_mod._client_singleton = old_singleton
-            api_mod.REMARKABLE_TOKEN = old_token
+        assert api_mod.get_rmapi() is None
 
     def test_cache_raises_when_no_client(self):
         """Test that get_cached_collection raises RuntimeError when client is None."""
@@ -978,21 +815,21 @@ class TestSuggestForError:
         from rm_mcp.tools._helpers import suggest_for_error
 
         result = suggest_for_error(RuntimeError("Not authenticated. Run: uvx rm-mcp --setup"))
-        assert "--setup" in result
+        assert "rm-mcp@latest setup" in result
         assert "authenticate" in result.lower()
 
     def test_token_expired_error(self):
         from rm_mcp.tools._helpers import suggest_for_error
 
         result = suggest_for_error(RuntimeError("Failed to renew user token (HTTP 401)"))
-        assert "--setup" in result
+        assert "rm-mcp@latest setup" in result
         assert "expired" in result.lower()
 
     def test_re_authenticate_error(self):
         from rm_mcp.tools._helpers import suggest_for_error
 
         result = suggest_for_error(RuntimeError("Re-authenticate by running: uvx rm-mcp --setup"))
-        assert "--setup" in result
+        assert "rm-mcp@latest setup" in result
 
     def test_network_error(self):
         from rm_mcp.tools._helpers import suggest_for_error
@@ -1010,7 +847,7 @@ class TestSuggestForError:
         from rm_mcp.tools._helpers import suggest_for_error
 
         result = suggest_for_error(RuntimeError("Empty response from reMarkable API"))
-        assert "--setup" in result
+        assert "rm-mcp@latest setup" in result
 
     def test_generic_error_fallback(self):
         from rm_mcp.tools._helpers import suggest_for_error
@@ -1022,4 +859,4 @@ class TestSuggestForError:
         from rm_mcp.tools._helpers import suggest_for_error
 
         result = suggest_for_error(RuntimeError("No device token available"))
-        assert "--setup" in result
+        assert "rm-mcp@latest setup" in result

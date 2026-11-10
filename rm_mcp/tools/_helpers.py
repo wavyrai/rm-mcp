@@ -45,15 +45,15 @@ def suggest_for_error(e: Exception) -> str:
     """Generate a context-aware suggestion based on error content."""
     msg = str(e).lower()
     if "not authenticated" in msg or "no device token" in msg:
-        return "Run: uvx rm-mcp --setup to authenticate."
+        return "Run: uvx rm-mcp@latest setup to authenticate."
     if "re-authenticate" in msg or ("token" in msg and ("expired" in msg or "401" in msg)):
-        return "Your token may have expired. Run: uvx rm-mcp --setup to re-authenticate."
+        return "Your token may have expired. Run: uvx rm-mcp@latest setup to re-authenticate."
     if "network error" in msg or "connection" in msg or "timeout" in msg:
         return "Check your internet connection and try again."
     if "empty response" in msg:
         return (
             "The reMarkable API returned an empty response. "
-            "Your token may have expired. Run: uvx rm-mcp --setup"
+            "Your token may have expired. Run: uvx rm-mcp@latest setup"
         )
     return "Check remarkable_status() for diagnostics."
 

@@ -14,17 +14,20 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from rm_mcp import auth
 from rm_mcp.blobstore import get_default_store
 from rm_mcp.config import env_int
 from rm_mcp.models import Document, Folder  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+SETUP_HINT = "uvx rm-mcp@latest setup"
 
 # Maximum number of parallel workers for fetching document metadata
 _PARALLEL_WORKERS = env_int("REMARKABLE_PARALLEL_WORKERS", 5, minimum=1)
@@ -220,6 +223,8 @@ class RemarkableClient:
         """
         self.device_token = device_token
         self.user_token = user_token
+        # Called with each renewed user token (rm_mcp.api saves it to the token file).
+        self.on_token_renewed: Optional[Callable[[str], None]] = None
         self._documents: List[Document] = []
         self._documents_by_id: Dict[str, Document] = {}
         self._token_lock = threading.Lock()
@@ -266,13 +271,18 @@ class RemarkableClient:
             response = self._session.post(USER_TOKEN_URL, headers=headers, timeout=30)
             if response.status_code == 200 and response.text:
                 self.user_token = response.text.strip()
+                if self.on_token_renewed is not None:
+                    try:
+                        self.on_token_renewed(self.user_token)
+                    except Exception:
+                        logger.warning("Could not save the renewed user token", exc_info=True)
                 return self.user_token
         except requests.RequestException as e:
             raise RuntimeError(f"Network error during token renewal: {e}")
 
         raise RuntimeError(
             f"Failed to renew user token (HTTP {response.status_code}).\n"
-            "Re-authenticate by running: uvx rm-mcp --setup"
+            f"Re-authenticate by running: {SETUP_HINT}"
         )
 
     def _request(
@@ -475,7 +485,7 @@ class RemarkableClient:
         if not response.text or not response.text.strip():
             raise RuntimeError(
                 "Empty response from reMarkable API. Your token may have expired.\n"
-                "Re-authenticate by running: uvx rm-mcp --setup"
+                f"Re-authenticate by running: {SETUP_HINT}"
             )
 
         try:
@@ -727,7 +737,7 @@ class RemarkableClient:
         return zip_buffer.read()
 
 
-def register_device(one_time_code: str) -> Dict[str, str]:
+def register_device(one_time_code: str, device_desc: Optional[str] = None) -> Dict[str, str]:
     """
     Register a new device with reMarkable cloud.
 
@@ -741,7 +751,7 @@ def register_device(one_time_code: str) -> Dict[str, str]:
 
     body = {
         "code": one_time_code,
-        "deviceDesc": "desktop-linux",
+        "deviceDesc": device_desc or auth.device_desc(),
         "deviceID": str(uuid4()),
     }
 
@@ -764,38 +774,16 @@ def register_device(one_time_code: str) -> Dict[str, str]:
 
 def load_client_from_token(token_data: str) -> RemarkableClient:
     """
-    Create a client from a token string.
-
-    Args:
-        token_data: Either:
-            - JSON string with devicetoken and optional usertoken
-            - Raw JWT device token (legacy format from rmapy)
-
-    Returns:
-        Configured RemarkableClient
+    Create a client from a token string: a JSON object with devicetoken and
+    optional usertoken, or a raw JWT device token (legacy rmapy format). A
+    stored user token is used only while it has more than a few minutes left.
     """
-    token_data = token_data.strip()
-
-    # Try to parse as JSON first
-    if token_data.startswith("{"):
-        try:
-            data = json.loads(token_data)
-            return RemarkableClient(
-                device_token=data.get("devicetoken", ""),
-                user_token=data.get("usertoken", ""),
-            )
-        except json.JSONDecodeError:
-            pass
-
-    # Treat as raw device token (legacy rmapy format - just the JWT)
-    # JWT tokens start with "eyJ" (base64 encoded '{"')
-    if token_data.startswith("eyJ"):
-        return RemarkableClient(device_token=token_data, user_token="")
-
-    # Never echo the token itself — this message reaches logs and tool output.
-    raise ValueError(
-        "Invalid token format. Expected either a JSON object with a "
-        "'devicetoken' key, or a raw JWT device token.\n"
-        f"Got {len(token_data)} characters that match neither shape.\n"
-        "Re-authenticate by running: uvx rm-mcp --setup"
+    try:
+        data = auth.parse(token_data)
+    except ValueError as e:
+        # Never echo the token itself — this message reaches logs and tool output.
+        raise ValueError(f"Invalid token format. {e}\nRe-authenticate by running: {SETUP_HINT}")
+    return RemarkableClient(
+        device_token=data["devicetoken"],
+        user_token=auth.usable_user_token(data["usertoken"]),
     )
