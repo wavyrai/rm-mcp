@@ -4,7 +4,7 @@ from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
 
 
-@mcp.tool(annotations=_helpers.BROWSE_ANNOTATIONS)
+@mcp.tool(title=_helpers.BROWSE_ANNOTATIONS.title, annotations=_helpers.BROWSE_ANNOTATIONS)
 async def remarkable_browse(path: str = "/", compact_output: bool = False) -> str:
     """
     <usecase>Browse your reMarkable library folders.</usecase>

@@ -149,8 +149,7 @@ def use_library(library: FakeLibrary):
 async def call(tool: str, **kwargs):
     """Call a tool through the MCP server and parse its JSON response."""
     result = await mcp.call_tool(tool, kwargs)
-    payload = result[0][0] if isinstance(result[0], (list, tuple)) else result[0]
-    return json.loads(payload.text)
+    return json.loads(result.content[0].text)
 
 
 # =============================================================================

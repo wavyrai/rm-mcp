@@ -13,7 +13,7 @@ rm-mcp is an MCP (Model Context Protocol) server that gives AI assistants read-o
 
 ```
 rm_mcp/                   # Main package
-  server.py               # FastMCP server subclass & initialization
+  server.py               # MCPServer subclass & initialization
   cli.py                  # CLI (--setup, --register, or start server)
   api.py                  # Singleton reMarkable Cloud client
   config.py               # Tolerant env var parsing (env_int/env_bool)

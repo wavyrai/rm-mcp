@@ -6,54 +6,37 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 logger = logging.getLogger(__name__)
 
 
-class RemarkableMCP(FastMCP):
-    """Custom FastMCP server that handles VS Code's URI quirks.
+def normalize_resource_uri(uri: str) -> str:
+    """Map a client-sent resource URI onto the form resources are registered under.
 
-    VS Code:
-    - Appends ?version=... to resource URIs for cache busting
-    - May send URIs with spaces or URL-encoded (%20)
-
-    Pydantic's AnyUrl stores URIs with URL-encoded paths, so we need to
-    normalize incoming URIs to match.
+    Resources are registered with the document's display path as-is, spaces
+    included. VS Code appends ``?version=...`` for cache busting and may send
+    the path either raw or percent-encoded, so strip the query and decode the
+    path before lookup.
     """
+    if "?" in uri:
+        uri = uri.split("?", 1)[0]
+    if ":///" in uri:
+        scheme_end = uri.index(":///") + 4
+        uri = uri[:scheme_end] + unquote(uri[scheme_end:])
+    return uri
 
-    async def read_resource(self, uri):
-        """Read a resource, normalizing the URI for lookup.
 
-        Handles:
-        - Query parameters: ?version=timestamp -> stripped
-        - Spaces in path: encode to %20 to match stored URIs
-        """
-        uri_str = str(uri)
+class RemarkableMCP(MCPServer):
+    """MCP server that tolerates VS Code's resource URI quirks."""
 
-        # Strip query parameters (e.g., ?version=1764625282944)
-        if "?" in uri_str:
-            uri_str = uri_str.split("?")[0]
-            logger.debug("Stripped query params from resource URI")
-
-        # Normalize path encoding - Pydantic AnyUrl stores with %20 for spaces
-        # VS Code may send either spaces or %20, so normalize to %20
-        if ":///" in uri_str:
-            scheme_end = uri_str.index(":///") + 4
-            scheme = uri_str[:scheme_end]
-            path = uri_str[scheme_end:]
-
-            # First decode any existing encoding, then re-encode consistently
-            # This handles both "November 2025" and "November%202025" inputs
-            decoded_path = unquote(path)
-            # quote with safe='/' preserves path separators but encodes spaces
-            encoded_path = quote(decoded_path, safe="/:")
-            uri_str = scheme + encoded_path
-            logger.debug(f"Normalized resource URI path: {path} -> {encoded_path}")
-
-        return await super().read_resource(uri_str)
+    async def read_resource(self, uri, context=None):
+        normalized = normalize_resource_uri(str(uri))
+        if normalized != str(uri):
+            logger.debug("Normalized resource URI %s -> %s", uri, normalized)
+        return await super().read_resource(normalized, context)
 
 
 def _build_instructions() -> str:
@@ -151,7 +134,7 @@ responses are relative to it, and documents outside it are not accessible.
 
 
 @asynccontextmanager
-async def lifespan(app: FastMCP) -> AsyncIterator[None]:
+async def lifespan(app: MCPServer) -> AsyncIterator[None]:
     """Lifespan context manager for the MCP server."""
     # Initialize the persistent document index (L2 cache)
     from rm_mcp import index as _index_mod
@@ -187,8 +170,22 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
         _index_mod.close()
 
 
-# Initialize FastMCP server with lifespan and instructions
-mcp = RemarkableMCP("rm-mcp", instructions=_build_instructions(), lifespan=lifespan)
+def _package_version() -> str:
+    from rm_mcp import __version__
+
+    return __version__
+
+
+# Everything after the name is keyword-only by convention: in SDK 2.x the second
+# positional parameter is `title`, so a positional instructions string would
+# silently become the title.
+mcp = RemarkableMCP(
+    name="rm-mcp",
+    title="reMarkable",
+    instructions=_build_instructions(),
+    version=_package_version(),
+    lifespan=lifespan,
+)
 
 # Import tools, resources, and prompts to register them
 from rm_mcp import (  # noqa: E402
@@ -200,4 +197,4 @@ from rm_mcp import (  # noqa: E402
 
 def run():
     """Run the MCP server."""
-    mcp.run()
+    mcp.run(transport="stdio")

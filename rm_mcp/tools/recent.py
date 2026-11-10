@@ -35,7 +35,7 @@ def _modified_sort_key(doc) -> datetime:
     return modified
 
 
-@mcp.tool(annotations=_helpers.RECENT_ANNOTATIONS)
+@mcp.tool(title=_helpers.RECENT_ANNOTATIONS.title, annotations=_helpers.RECENT_ANNOTATIONS)
 async def remarkable_recent(
     limit: int = 10, include_preview: bool = False, compact_output: bool = False
 ) -> str:

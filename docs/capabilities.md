@@ -19,7 +19,7 @@ This enables features like:
 Tools can check what the connected client supports using the capability utilities:
 
 ```python
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from rm_mcp.capabilities import (
     get_client_capabilities,
     client_supports_sampling,

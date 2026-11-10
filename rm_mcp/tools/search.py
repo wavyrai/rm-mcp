@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 MAX_SEARCH_RESULTS = 10
 
 
-@mcp.tool(annotations=_helpers.SEARCH_ANNOTATIONS)
+@mcp.tool(title=_helpers.SEARCH_ANNOTATIONS.title, annotations=_helpers.SEARCH_ANNOTATIONS)
 async def remarkable_search(
     query: str,
     grep: Optional[str] = None,

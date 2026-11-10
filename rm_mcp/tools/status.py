@@ -4,7 +4,7 @@ from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
 
 
-@mcp.tool(annotations=_helpers.STATUS_ANNOTATIONS)
+@mcp.tool(title=_helpers.STATUS_ANNOTATIONS.title, annotations=_helpers.STATUS_ANNOTATIONS)
 async def remarkable_status(compact_output: bool = False) -> str:
     """
     <usecase>Check connection status and authentication with reMarkable Cloud.</usecase>

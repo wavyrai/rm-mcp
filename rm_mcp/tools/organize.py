@@ -17,10 +17,10 @@ from rm_mcp.tools import _helpers
 logger = logging.getLogger(__name__)
 
 _WRITE_ANNOTATIONS = {
-    "readOnlyHint": False,
-    "destructiveHint": False,  # nothing is deleted; renames and moves reverse
-    "idempotentHint": False,
-    "openWorldHint": False,
+    "read_only_hint": False,
+    "destructive_hint": False,  # nothing is deleted; renames and moves reverse
+    "idempotent_hint": False,
+    "open_world_hint": False,
 }
 
 RENAME_ANNOTATIONS = ToolAnnotations(title="Rename reMarkable Item", **_WRITE_ANNOTATIONS)
@@ -87,7 +87,7 @@ def _writer(client):
     return LibraryWriter(client)
 
 
-@mcp.tool(annotations=RENAME_ANNOTATIONS)
+@mcp.tool(title=RENAME_ANNOTATIONS.title, annotations=RENAME_ANNOTATIONS)
 async def remarkable_rename(item: str, new_name: str, compact_output: bool = False) -> str:
     """
     <usecase>Rename a document or folder on your reMarkable.</usecase>
@@ -160,7 +160,7 @@ async def remarkable_rename(item: str, new_name: str, compact_output: bool = Fal
         )
 
 
-@mcp.tool(annotations=MOVE_ANNOTATIONS)
+@mcp.tool(title=MOVE_ANNOTATIONS.title, annotations=MOVE_ANNOTATIONS)
 async def remarkable_move(item: str, destination: str, compact_output: bool = False) -> str:
     """
     <usecase>Move a document or folder into another folder.</usecase>
@@ -269,7 +269,7 @@ async def remarkable_move(item: str, destination: str, compact_output: bool = Fa
         )
 
 
-@mcp.tool(annotations=CREATE_FOLDER_ANNOTATIONS)
+@mcp.tool(title=CREATE_FOLDER_ANNOTATIONS.title, annotations=CREATE_FOLDER_ANNOTATIONS)
 async def remarkable_create_folder(path: str, compact_output: bool = False) -> str:
     """
     <usecase>Create a new empty folder on your reMarkable.</usecase>

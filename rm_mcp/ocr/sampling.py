@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Optional
 from mcp.types import ImageContent, ModelHint, ModelPreferences, SamplingMessage, TextContent
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ async def ocr_via_sampling(
     Perform OCR on an image using the client's LLM via MCP sampling.
 
     Args:
-        ctx: The FastMCP Context object from a tool function
+        ctx: The MCP Context object from a tool function
         png_data: PNG image bytes to perform OCR on
         max_tokens: Maximum tokens for the response (default: 2000)
 
@@ -113,7 +113,7 @@ async def ocr_via_sampling(
                 content=ImageContent(
                     type="image",
                     data=image_b64,
-                    mimeType="image/png",
+                    mime_type="image/png",
                 ),
             ),
             SamplingMessage(
@@ -179,7 +179,7 @@ def should_use_sampling_ocr(ctx: "Context") -> bool:
     2. The client supports the sampling capability
 
     Args:
-        ctx: The FastMCP Context object
+        ctx: The MCP Context object
 
     Returns:
         True if sampling OCR should be used, False otherwise

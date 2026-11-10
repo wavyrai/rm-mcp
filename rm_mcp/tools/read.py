@@ -3,13 +3,13 @@
 import re
 from typing import Literal, Optional
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 
 from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
 
 
-@mcp.tool(annotations=_helpers.READ_ANNOTATIONS)
+@mcp.tool(title=_helpers.READ_ANNOTATIONS.title, annotations=_helpers.READ_ANNOTATIONS)
 async def remarkable_read(
     document: str,
     content_type: Literal["text", "annotations"] = "text",

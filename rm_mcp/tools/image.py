@@ -3,7 +3,7 @@
 import base64
 from typing import Optional
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.types import (
     EmbeddedResource,
     ImageContent,
@@ -15,7 +15,7 @@ from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
 
 
-@mcp.tool(annotations=_helpers.IMAGE_ANNOTATIONS)
+@mcp.tool(title=_helpers.IMAGE_ANNOTATIONS.title, annotations=_helpers.IMAGE_ANNOTATIONS)
 async def remarkable_image(
     document: str,
     page: int = 1,
@@ -176,7 +176,7 @@ async def remarkable_image(
                     # Return SVG as embedded TextResourceContents with info hint
                     text_resource = TextResourceContents(
                         uri=resource_uri,
-                        mimeType="image/svg+xml",
+                        mime_type="image/svg+xml",
                         text=svg_content,
                     )
                     embedded = EmbeddedResource(type="resource", resource=text_resource)
@@ -214,7 +214,7 @@ async def remarkable_image(
                             compact=compact,
                         )
                     else:
-                        image = ImageContent(type="image", data=png_base64, mimeType="image/png")
+                        image = ImageContent(type="image", data=png_base64, mime_type="image/png")
                         info = TextContent(
                             type="text",
                             text=f"Page {page}/{total_pages} of '{target_doc.VissibleName}' "
@@ -303,7 +303,7 @@ async def remarkable_image(
                     return _helpers.make_response(response_data, hint, compact=compact)
                 else:
                     # Return PNG as ImageContent for direct visibility in clients
-                    image = ImageContent(type="image", data=png_base64, mimeType="image/png")
+                    image = ImageContent(type="image", data=png_base64, mime_type="image/png")
 
                     info_text = f"Page {page}/{total_pages} of '{target_doc.VissibleName}' as PNG. "
                     info_text += f"Resource URI: {resource_uri}"

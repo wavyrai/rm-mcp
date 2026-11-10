@@ -11,6 +11,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -117,14 +118,44 @@ class TestMCPServerInitialization:
     async def test_only_organizing_tools_are_writes(self):
         """Everything except rename/move/create_folder must be read-only."""
         tools = await mcp.list_tools()
-        writers = {t.name for t in tools if not t.annotations.readOnlyHint}
+        writers = {t.name for t in tools if not t.annotations.read_only_hint}
         assert writers == {
             "remarkable_rename",
             "remarkable_move",
             "remarkable_create_folder",
         }
         # No tool is allowed to advertise itself as destructive
-        assert not any(t.annotations.destructiveHint for t in tools)
+        assert not any(t.annotations.destructive_hint for t in tools)
+
+    @pytest.mark.asyncio
+    async def test_every_tool_has_title_and_hints(self):
+        """Every tool carries a title (top-level and in annotations) and explicit hints."""
+        tools = await mcp.list_tools()
+        writes = {"remarkable_rename", "remarkable_move", "remarkable_create_folder"}
+        for tool in tools:
+            assert tool.title, f"{tool.name} has no title"
+            assert tool.annotations.title == tool.title
+            assert tool.annotations.read_only_hint is (tool.name not in writes)
+            assert tool.annotations.destructive_hint is False
+        wire = [t.model_dump(by_alias=True, mode="json", exclude_none=True) for t in tools]
+        assert all("readOnlyHint" in t["annotations"] for t in wire)
+
+    def test_resource_uri_normalization(self):
+        """VS Code's ?version= suffix and %20 encoding map onto the registered URI."""
+        from rm_mcp.server import normalize_resource_uri
+
+        want = "remarkable:///Work/November 2025.txt"
+        assert normalize_resource_uri("remarkable:///Work/November%202025.txt") == want
+        assert normalize_resource_uri("remarkable:///Work/November 2025.txt?version=17") == want
+        assert normalize_resource_uri(want) == want
+
+    @pytest.mark.asyncio
+    async def test_read_resource_accepts_encoded_uri(self):
+        """A resource registered with spaces is readable via its %20 form."""
+        uri = "remarkable:///Normalization Probe.txt"
+        mcp.resource(uri, name="probe", mime_type="text/plain")(lambda: "probe text")
+        contents = await mcp.read_resource("remarkable:///Normalization%20Probe.txt?version=1")
+        assert [c.content for c in contents] == ["probe text"]
 
     @pytest.mark.asyncio
     async def test_tool_schemas(self):
@@ -134,7 +165,7 @@ class TestMCPServerInitialization:
         for tool in tools:
             assert tool.name, "Tool should have a name"
             assert tool.description, "Tool should have a description"
-            assert hasattr(tool, "inputSchema"), "Tool should have inputSchema"
+            assert hasattr(tool, "input_schema"), "Tool should have input_schema"
 
     @pytest.mark.asyncio
     async def test_all_tools_have_xml_docstrings(self):
@@ -283,7 +314,7 @@ class TestRemarkableStatus:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_status", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["authenticated"] is True
         assert "transport" in data
@@ -298,7 +329,7 @@ class TestRemarkableStatus:
         mock_get_cached.side_effect = RuntimeError("Not authenticated. Run: uvx rm-mcp --setup")
 
         result = await mcp.call_tool("remarkable_status", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["authenticated"] is False
         assert "error" in data
@@ -323,7 +354,7 @@ class TestRemarkableBrowse:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_browse", {"path": "/"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["mode"] == "browse"
         assert data["path"] == "/"
@@ -336,7 +367,7 @@ class TestRemarkableBrowse:
         mock_get_cached.side_effect = RuntimeError("Connection failed")
 
         result = await mcp.call_tool("remarkable_browse", {"path": "/"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "browse_failed"
@@ -358,7 +389,7 @@ class TestRemarkableRecent:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_recent", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "count" in data
         assert "documents" in data
@@ -372,7 +403,7 @@ class TestRemarkableRecent:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_recent", {"limit": 5})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "count" in data
         assert "documents" in data
@@ -387,7 +418,7 @@ class TestRemarkableRecent:
         # Test with limit > 50
         result = await mcp.call_tool("remarkable_recent", {"limit": 100})
         # Should not raise an error
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
         assert "count" in data
 
     @pytest.mark.asyncio
@@ -397,7 +428,7 @@ class TestRemarkableRecent:
         mock_get_cached.side_effect = RuntimeError("Connection failed")
 
         result = await mcp.call_tool("remarkable_recent", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "recent_failed"
@@ -419,7 +450,7 @@ class TestRemarkableRead:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_read", {"document": "NonExistent"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "document_not_found"
@@ -432,7 +463,7 @@ class TestRemarkableRead:
         mock_get_cached.side_effect = RuntimeError("Connection failed")
 
         result = await mcp.call_tool("remarkable_read", {"document": "Test"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "read_failed"
@@ -446,7 +477,7 @@ class TestRemarkableRead:
 
         # Search for something similar but not exact
         result = await mcp.call_tool("remarkable_read", {"document": "Test Doc"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         # Should get a not found error with suggestions
         assert "_error" in data
@@ -469,7 +500,7 @@ class TestRemarkableImage:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_image", {"document": "NonExistent"})
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "document_not_found"
@@ -482,7 +513,7 @@ class TestRemarkableImage:
         mock_get_cached.side_effect = RuntimeError("Connection failed")
 
         result = await mcp.call_tool("remarkable_image", {"document": "Test"})
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "image_failed"
@@ -496,7 +527,7 @@ class TestRemarkableImage:
 
         # Search for something similar but not exact
         result = await mcp.call_tool("remarkable_image", {"document": "Test Doc"})
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         # Should get a not found error with suggestions
         assert "_error" in data
@@ -509,8 +540,8 @@ class TestRemarkableImage:
         image_tool = next(t for t in tools if t.name == "remarkable_image")
 
         # Check that compatibility parameter exists in the input schema
-        assert "compatibility" in image_tool.inputSchema.get("properties", {})
-        compat_schema = image_tool.inputSchema["properties"]["compatibility"]
+        assert "compatibility" in image_tool.input_schema.get("properties", {})
+        compat_schema = image_tool.input_schema["properties"]["compatibility"]
         assert compat_schema.get("type") == "boolean"
         assert compat_schema.get("default") is False
 
@@ -699,7 +730,7 @@ class TestUnauthenticatedMode:
     async def test_tools_return_setup_instructions(self, mock_cached, mock_rmapi):
         """Test that tools return setup instructions when not authenticated."""
         result = await mcp.call_tool("remarkable_status", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["authenticated"] is False
         assert "--setup" in data["_hint"]
@@ -768,7 +799,7 @@ class TestE2E:
         result = await mcp.call_tool("remarkable_status", {})
 
         # Verify we get valid JSON back
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
         assert "authenticated" in data
         assert "_hint" in data
 
@@ -799,17 +830,17 @@ class TestE2E:
 
             # Test status
             result = await mcp.call_tool("remarkable_status", {})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
             assert "_hint" in data
 
             # Test browse
             result = await mcp.call_tool("remarkable_browse", {"path": "/"})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
             assert "_hint" in data or "_error" in data
 
             # Test recent
             result = await mcp.call_tool("remarkable_recent", {})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
             assert "_hint" in data or "_error" in data
 
 
@@ -836,7 +867,7 @@ class TestResponseConsistency:
 
         for tool_name, args in tools_to_test:
             result = await mcp.call_tool(tool_name, args)
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
 
             # Either success with _hint or error with _error
             has_hint = "_hint" in data
@@ -874,8 +905,7 @@ class TestCapabilityChecking:
         from rm_mcp.capabilities import get_client_capabilities
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = None
+        mock_ctx.session = SimpleNamespace(client_capabilities=None, client_params=None)
 
         result = get_client_capabilities(mock_ctx)
         assert result is None
@@ -889,9 +919,7 @@ class TestCapabilityChecking:
         mock_caps = ClientCapabilities(sampling=SamplingCapability())
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
         result = get_client_capabilities(mock_ctx)
         assert result is not None
@@ -906,9 +934,7 @@ class TestCapabilityChecking:
         mock_caps = ClientCapabilities(sampling=SamplingCapability())
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
         result = client_supports_sampling(mock_ctx)
         assert result is True
@@ -922,9 +948,7 @@ class TestCapabilityChecking:
         mock_caps = ClientCapabilities(sampling=None)
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
         result = client_supports_sampling(mock_ctx)
         assert result is False
@@ -939,15 +963,13 @@ class TestCapabilityChecking:
         mock_caps = ClientCapabilities(elicitation=ElicitationCapability())
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
         assert client_supports_elicitation(mock_ctx) is True
 
         # Test with elicitation disabled
         mock_caps = ClientCapabilities(elicitation=None)
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session.client_capabilities = mock_caps
 
         assert client_supports_elicitation(mock_ctx) is False
 
@@ -961,15 +983,13 @@ class TestCapabilityChecking:
         mock_caps = ClientCapabilities(roots=RootsCapability())
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
         assert client_supports_roots(mock_ctx) is True
 
         # Test with roots disabled
         mock_caps = ClientCapabilities(roots=None)
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session.client_capabilities = mock_caps
 
         assert client_supports_roots(mock_ctx) is False
 
@@ -983,30 +1003,32 @@ class TestCapabilityChecking:
         mock_caps = ClientCapabilities(experimental={"my_feature": {}})
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
         assert client_supports_experimental(mock_ctx, "my_feature") is True
         assert client_supports_experimental(mock_ctx, "other_feature") is False
 
         # Test with no experimental features
         mock_caps = ClientCapabilities(experimental=None)
-        mock_ctx.session.client_params.capabilities = mock_caps
+        mock_ctx.session.client_capabilities = mock_caps
 
         assert client_supports_experimental(mock_ctx, "my_feature") is False
 
     def test_get_client_info(self):
-        """Test get_client_info."""
+        """Test get_client_info against the SDK's real InitializeRequestParams."""
+        from mcp.types import ClientCapabilities, Implementation, InitializeRequestParams
+
         from rm_mcp.capabilities import get_client_info
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.clientInfo = Mock()
-        mock_ctx.session.client_params.clientInfo.name = "Test Client"
-        mock_ctx.session.client_params.clientInfo.version = "1.0.0"
-        mock_ctx.session.client_params.protocolVersion = "2024-11-05"
+        mock_ctx.session = SimpleNamespace(
+            client_params=InitializeRequestParams(
+                protocol_version="2024-11-05",
+                capabilities=ClientCapabilities(),
+                client_info=Implementation(name="Test Client", version="1.0.0"),
+            ),
+            protocol_version="2024-11-05",
+        )
 
         result = get_client_info(mock_ctx)
         assert result is not None
@@ -1019,10 +1041,10 @@ class TestCapabilityChecking:
         from rm_mcp.capabilities import get_client_info
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.clientInfo = None
-        mock_ctx.session.client_params.protocolVersion = "2024-11-05"
+        mock_ctx.session = SimpleNamespace(
+            client_params=SimpleNamespace(client_info=None, protocol_version="2024-11-05"),
+            protocol_version="2024-11-05",
+        )
 
         result = get_client_info(mock_ctx)
         assert result is not None
@@ -1035,9 +1057,7 @@ class TestCapabilityChecking:
         from rm_mcp.capabilities import get_protocol_version
 
         mock_ctx = Mock()
-        mock_ctx.session = Mock()
-        mock_ctx.session.client_params = Mock()
-        mock_ctx.session.client_params.protocolVersion = "2024-11-05"
+        mock_ctx.session = SimpleNamespace(protocol_version="2024-11-05")
 
         result = get_protocol_version(mock_ctx)
         assert result == "2024-11-05"
@@ -1134,9 +1154,7 @@ class TestSamplingOCR:
             # Create mock context with sampling capability
             mock_caps = ClientCapabilities(sampling=SamplingCapability())
             mock_ctx = Mock()
-            mock_ctx.session = Mock()
-            mock_ctx.session.client_params = Mock()
-            mock_ctx.session.client_params.capabilities = mock_caps
+            mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
             # Should return True because default backend is "sampling"
             result = should_use_sampling_ocr(mock_ctx)
@@ -1160,9 +1178,7 @@ class TestSamplingOCR:
             # Create mock context with sampling capability
             mock_caps = ClientCapabilities(sampling=SamplingCapability())
             mock_ctx = Mock()
-            mock_ctx.session = Mock()
-            mock_ctx.session.client_params = Mock()
-            mock_ctx.session.client_params.capabilities = mock_caps
+            mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
             result = should_use_sampling_ocr(mock_ctx)
             assert result is True
@@ -1187,9 +1203,7 @@ class TestSamplingOCR:
             # Create mock context WITHOUT sampling capability
             mock_caps = ClientCapabilities(sampling=None)
             mock_ctx = Mock()
-            mock_ctx.session = Mock()
-            mock_ctx.session.client_params = Mock()
-            mock_ctx.session.client_params.capabilities = mock_caps
+            mock_ctx.session = SimpleNamespace(client_capabilities=mock_caps)
 
             result = should_use_sampling_ocr(mock_ctx)
             assert result is False
@@ -1391,7 +1405,7 @@ class TestRemarkableRecentExtended:
         mock_get_cached.return_value = (mock_client, [doc_old, doc_new, doc_mid])
 
         result = await mcp.call_tool("remarkable_recent", {"limit": 10})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] == 3
         names = [d["name"] for d in data["documents"]]
@@ -1426,7 +1440,7 @@ class TestRemarkableRecentExtended:
         # Also need to mock _get_file_type_cached to return "pdf" so preview is attempted
         with patch("rm_mcp.tools._helpers._get_file_type_cached", return_value="pdf"):
             result = await mcp.call_tool("remarkable_recent", {"limit": 5, "include_preview": True})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
 
         assert data["count"] == 1
         # The preview might or might not have content depending on extraction
@@ -1440,7 +1454,7 @@ class TestRemarkableRecentExtended:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_recent", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] == 0
         assert data["documents"] == []
@@ -1471,7 +1485,7 @@ class TestRemarkableRecentExtended:
         mock_get_cached.return_value = (mock_client, [folder, doc])
 
         result = await mcp.call_tool("remarkable_recent", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] == 1
         assert data["documents"][0]["name"] == "My Document"
@@ -1528,7 +1542,7 @@ class TestRemarkableImageExtended:
                 "remarkable_image",
                 {"document": "Cached Doc", "page": 1, "compatibility": True},
             )
-            data = json.loads(result[0].text)
+            data = json.loads(result.content[0].text)
 
             assert "data_uri" in data
             assert fake_base64 in data["data_uri"]
@@ -1555,7 +1569,7 @@ class TestRemarkableImageExtended:
         mock_get_cached.return_value = (mock_client, [doc])
 
         result = await mcp.call_tool("remarkable_image", {"document": "Meeting Noets"})
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "document_not_found"
@@ -1760,7 +1774,7 @@ class TestOCRAutoRetry:
             ),
         ):
             result = await mcp.call_tool("remarkable_read", {"document": "Handwritten Notes"})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
 
         # Should have auto-enabled OCR
         assert data.get("_ocr_auto_enabled") is True
@@ -1937,7 +1951,7 @@ class TestRemarkableSearch:
         mock_get_cached.return_value = (mock_client, [doc1, doc2, doc3])
 
         result = await mcp.call_tool("remarkable_search", {"query": "Meeting"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] == 2
         names = [d["name"] for d in data["documents"]]
@@ -1965,7 +1979,7 @@ class TestRemarkableSearch:
         mock_get_cached.return_value = (mock_client, [doc])
 
         result = await mcp.call_tool("remarkable_search", {"query": "NonExistentDocument"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "no_documents_found"
@@ -2002,7 +2016,7 @@ class TestRemarkableSearch:
         result = await mcp.call_tool(
             "remarkable_search", {"query": "Research", "grep": "hypothesis"}
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] == 1
         assert data["grep"] == "hypothesis"
@@ -2032,7 +2046,7 @@ class TestRemarkableSearch:
 
         over_limit = MAX_SEARCH_RESULTS + 5
         result = await mcp.call_tool("remarkable_search", {"query": "Note", "limit": over_limit})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] <= MAX_SEARCH_RESULTS
         # The reduction is reported rather than applied silently
@@ -2082,7 +2096,7 @@ class TestRemarkableReadHappyPath:
         }
 
         result = await mcp.call_tool("remarkable_read", {"document": "Typed Notes"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "content" in data
         assert "Hello world" in data["content"]
@@ -2122,7 +2136,7 @@ class TestRemarkableReadHappyPath:
         }
 
         result = await mcp.call_tool("remarkable_read", {"document": "Report.pdf"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["file_type"] == "pdf"
         assert "Annotation on the PDF report" in data["content"]
@@ -2158,7 +2172,7 @@ class TestRemarkableReadHappyPath:
         }
 
         result = await mcp.call_tool("remarkable_read", {"document": "Short Doc", "page": 999})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "page_out_of_range"
@@ -2207,7 +2221,7 @@ class TestRemarkableReadGrep:
             "remarkable_read",
             {"document": "Searchable Doc", "grep": "installation"},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "grep_matches" in data
         assert data["grep_matches"] > 0
@@ -2245,7 +2259,7 @@ class TestRemarkableReadGrep:
             "remarkable_read",
             {"document": "Some Document", "grep": "quantum_physics"},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         # grep with no matches should result in empty content
         assert data.get("content") == "" or data.get("grep_matches", 0) == 0
@@ -2282,7 +2296,7 @@ class TestRemarkableReadGrep:
             "remarkable_read",
             {"document": "Regex Test Doc", "grep": "[invalid"},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "invalid_grep"
@@ -2328,7 +2342,7 @@ class TestBrowseAutoRedirect:
         )
 
         result = await mcp.call_tool("remarkable_browse", {"path": "/My Report"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_redirected_from" in data
         assert data["_redirected_from"] == "browse:/My Report"
@@ -2693,7 +2707,7 @@ class TestSearchWithFTS:
             )
 
             result = await mcp.call_tool("remarkable_search", {"query": "budget"})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
 
             assert data["count"] >= 1
             match_types = [d.get("match_type") for d in data["documents"]]
@@ -2744,7 +2758,7 @@ class TestSearchWithFTS:
             mock_get_cached.return_value = (mock_client, [doc])
 
             result = await mcp.call_tool("remarkable_search", {"query": "photosynthesis"})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
 
             assert data["count"] == 1
             assert data["documents"][0]["match_type"] == "content"
@@ -2774,7 +2788,7 @@ class TestStatusWithIndex:
             mock_get_cached.return_value = (mock_client, [])
 
             result = await mcp.call_tool("remarkable_status", {})
-            data = json.loads(result[0][0].text)
+            data = json.loads(result.content[0].text)
 
             assert data["authenticated"] is True
             assert "index_documents" in data
@@ -2931,7 +2945,7 @@ class TestCompactMode:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_status", {"compact_output": True})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["authenticated"] is True
         assert "_hint" not in data
@@ -3027,7 +3041,7 @@ class TestMultiPageRead:
         result = await mcp.call_tool(
             "remarkable_read", {"document": "Multi Page Notes", "pages": "all"}
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "pages" in data
         assert data["pages"] == [1, 2, 3]
@@ -3064,7 +3078,7 @@ class TestMultiPageRead:
         }
 
         result = await mcp.call_tool("remarkable_read", {"document": "Range Notes", "pages": "2-4"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["pages"] == [2, 3, 4]
         assert "P2" in data["content"]
@@ -3100,7 +3114,7 @@ class TestMultiPageRead:
         }
 
         result = await mcp.call_tool("remarkable_read", {"document": "Full PDF", "pages": "all"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["more"] is False
         assert "Full PDF annotation content" in data["content"]
@@ -3151,7 +3165,7 @@ class TestGrepAutoRedirect:
             "remarkable_read",
             {"document": "Redirect Test", "page": 1, "grep": "keyword"},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         # Should auto-redirect to page 3 (where "keyword" is found)
         assert data["page"] == 3
@@ -3192,7 +3206,7 @@ class TestGrepAutoRedirect:
             "remarkable_read",
             {"document": "No Match Doc", "grep": "nonexistent_term_xyz"},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "no_grep_matches"
@@ -3223,7 +3237,7 @@ class TestSearchPerformance:
         mock_get_cached.return_value = (mock_client, [doc])
 
         result = await mcp.call_tool("remarkable_search", {"query": "Test"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] == 1
         assert data["documents"][0]["match_type"] == "name"
@@ -3260,7 +3274,7 @@ class TestSearchPerformance:
         )
 
         result = await mcp.call_tool("remarkable_search", {"query": "Grep", "grep": "pattern"})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["count"] == 1
         assert data["documents"][0].get("grep_matches", 0) >= 0
@@ -3304,7 +3318,7 @@ class TestL2Preview:
                 result = await mcp.call_tool(
                     "remarkable_recent", {"limit": 5, "include_preview": True}
                 )
-                data = json.loads(result[0][0].text)
+                data = json.loads(result.content[0].text)
 
             assert data["count"] == 1
             assert "preview" in data["documents"][0]
@@ -3419,7 +3433,7 @@ class TestAutoOcrOptOut:
             "remarkable_read",
             {"document": "Empty Notebook", "auto_ocr": False},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         # Should return empty content without OCR auto-retry
         assert data.get("content") == ""
@@ -3503,7 +3517,7 @@ class TestStatusConfig:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_status", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["authenticated"] is True
         assert "config" in data
@@ -3522,7 +3536,7 @@ class TestStatusConfig:
         mock_get_cached.return_value = (mock_client, [])
 
         result = await mcp.call_tool("remarkable_status", {})
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         config = data["config"]
         assert config["ocr_backend"] == "sampling"
@@ -3575,7 +3589,7 @@ class TestOCRUnavailableMessage:
             "remarkable_image",
             {"document": "Test Notebook", "include_ocr": True, "compatibility": True},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert "ocr_message" in data
         assert "unavailable" in data["ocr_message"].lower()
@@ -3625,7 +3639,7 @@ class TestAnnotationsMode:
             "remarkable_read",
             {"document": "Annotated Doc", "content_type": "annotations"},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert "content" in data
         assert data["content_type"] == "annotations"
@@ -3667,7 +3681,7 @@ class TestAnnotationsMode:
             "remarkable_read",
             {"document": "Empty Annot Doc", "content_type": "annotations"},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["content"] == ""
         assert data["content_type"] == "annotations"
@@ -3706,7 +3720,7 @@ class TestImageSVG:
             "remarkable_image",
             {"document": "SVG Test Doc", "output_format": "svg", "compatibility": True},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert "svg" in data
         assert data["mime_type"] == "image/svg+xml"
@@ -3739,15 +3753,14 @@ class TestImageSVG:
             {"document": "SVG Embedded Doc", "output_format": "svg", "compatibility": False},
         )
 
-        # Embedded mode returns a list with TextContent and EmbeddedResource
-        assert isinstance(result, list)
-        assert len(result) == 2
+        # Embedded mode returns TextContent and EmbeddedResource
+        assert len(result.content) == 2
         # First element is TextContent with info
-        assert hasattr(result[0], "text")
-        assert "SVG" in result[0].text
+        assert hasattr(result.content[0], "text")
+        assert "SVG" in result.content[0].text
         # Second element is EmbeddedResource
-        assert hasattr(result[1], "resource")
-        assert result[1].resource.mimeType == "image/svg+xml"
+        assert hasattr(result.content[1], "resource")
+        assert result.content[1].resource.mime_type == "image/svg+xml"
 
     @pytest.mark.asyncio
     @patch("rm_mcp.tools._helpers.render_page_from_document_zip_svg")
@@ -3773,7 +3786,7 @@ class TestImageSVG:
             "remarkable_image",
             {"document": "SVG Fail Doc", "output_format": "svg"},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert "_error" in data
         assert data["_error"]["type"] == "render_failed"
@@ -3852,7 +3865,7 @@ class TestNotebookPageCount:
             "remarkable_read",
             {"document": "Prototyper Design", "auto_ocr": False},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["total_pages"] == 16
         assert data["total_chars"] == 0
@@ -3892,7 +3905,7 @@ class TestNotebookPageCount:
             "remarkable_read",
             {"document": "Prototyper Design", "page": 20, "auto_ocr": False},
         )
-        data = json.loads(result[0][0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["_error"]["type"] == "page_out_of_range"
         assert "16 page(s)" in data["_error"]["message"]

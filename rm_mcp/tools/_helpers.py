@@ -74,7 +74,7 @@ def is_compact(compact_output: bool = False) -> bool:
 async def run_blocking(func: Callable[..., Any], *args, **kwargs) -> Any:
     """Run a blocking (network/CPU-bound) callable off the event loop.
 
-    FastMCP awaits async tools directly on the event loop, so any synchronous
+    MCPServer awaits async tools directly on the event loop, so any synchronous
     cloud download or extraction inside a tool would stall every other request
     on the connection until it finished.
     """
@@ -310,10 +310,10 @@ def _is_cloud_archived(item) -> bool:
 
 # Base annotations for read-only operations
 _BASE_ANNOTATIONS = {
-    "readOnlyHint": True,
-    "destructiveHint": False,
-    "idempotentHint": True,
-    "openWorldHint": False,  # Private cloud account, not open world
+    "read_only_hint": True,
+    "destructive_hint": False,
+    "idempotent_hint": True,
+    "open_world_hint": False,  # Private cloud account, not open world
 }
 
 # Unique annotations for each tool with descriptive titles

@@ -29,7 +29,7 @@ rm-mcp/
 ├── server.py              # Entry point (backwards compatible)
 ├── rm_mcp/                # Main package
 │   ├── __init__.py
-│   ├── server.py          # FastMCP server initialization
+│   ├── server.py          # MCPServer subclass & initialization
 │   ├── cli.py             # CLI (--setup, --register, server mode)
 │   ├── api.py             # reMarkable Cloud API helpers
 │   ├── models.py          # Document/Folder dataclasses

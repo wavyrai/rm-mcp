@@ -548,6 +548,6 @@ async def handle_completion(ref, argument, context):
             if partial:
                 suggestions = [s for s in suggestions if s.startswith(partial)]
 
-            return Completion(values=suggestions[:10], hasMore=len(suggestions) > 10)
+            return Completion(values=suggestions[:10], has_more=len(suggestions) > 10)
 
     return None
