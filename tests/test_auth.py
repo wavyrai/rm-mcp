@@ -380,3 +380,12 @@ def test_a_used_code_says_how_to_get_a_new_one(monkeypatch):
     with patch("requests.post", return_value=Mock(status_code=400, text="")):
         with pytest.raises(RuntimeError, match="Codes work once"):
             api_mod.get_rmapi()
+
+
+def test_setup_while_running_on_an_env_token_switches_to_the_file(monkeypatch):
+    monkeypatch.setenv("REMARKABLE_TOKEN", ENV_TOKEN)
+    first = api_mod.get_rmapi()
+    assert first.device_token == jwt(2e9, "env")
+    assert api_mod.get_rmapi() is first
+    auth.save_token({"devicetoken": jwt(2e9, "new"), "usertoken": ""})
+    assert api_mod.get_rmapi().device_token == jwt(2e9, "new")

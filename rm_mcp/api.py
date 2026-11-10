@@ -77,10 +77,14 @@ def current_source() -> Optional[auth.TokenSource]:
 
 
 def _token_file_replaced() -> bool:
-    """True when the client came from our token file and setup has replaced it since."""
+    """True when setup has written our token file since the client was built from it,
+    or since a client was built from REMARKABLE_TOKEN or ~/.rmapi."""
     global _client_signature
-    if _client_source is None or _client_source.kind != "file":
+    if _client_source is None:
         return False
+    if _client_source.kind != "file":
+        # Setup has written our file since this client started from env or ~/.rmapi.
+        return auth.file_signature(auth.token_path()) is not None
     signature = auth.file_signature(_client_source.path)
     if signature == _client_signature:
         return False
