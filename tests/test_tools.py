@@ -484,6 +484,7 @@ async def test_view_returns_an_opaque_full_page_png_under_budget(cloud):
     assert len(images) == 1 and images[0].mime_type == "image/png"
     img = png_of(images[0])
     assert img.size == (1404, 1872)
+    assert img.mode == "RGB"  # no alpha channel at all: dark clients show it as drawn
     rgba = img.convert("RGBA")
     assert rgba.getchannel("A").getextrema() == (255, 255)
     assert rgba.getpixel((5, 5))[:3] == (251, 251, 251)
