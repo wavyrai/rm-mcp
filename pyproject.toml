@@ -25,7 +25,7 @@ dependencies = [
     "rmscene>=0.8.0,<0.9",
     "requests>=2.28.0",
     "pymupdf>=1.24.0",
-    "markdown-it-py>=3.0,<5",
+    "markdown-it-py>=4.2.0,<5",
 ]
 
 [project.optional-dependencies]
