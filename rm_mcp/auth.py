@@ -18,6 +18,7 @@ Nothing here prints a token or puts one in an error message.
 import base64
 import json
 import os
+import posixpath
 import sys
 import tempfile
 import time
@@ -63,7 +64,7 @@ def config_dir(
     if platform == "darwin":
         return home / "Library" / "Application Support" / "rm-mcp"
     xdg = env.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg and os.path.isabs(xdg) else home / ".config"
+    base = Path(xdg) if xdg and posixpath.isabs(xdg) else home / ".config"
     return base / "rm-mcp"
 
 
