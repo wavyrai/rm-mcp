@@ -43,6 +43,10 @@ A rebuild of rm-mcp: ten id-addressed tools, writes that never delete, a token t
 - Dependencies dropped: `ebooklib`, `beautifulsoup4`, `rmc`, `cairosvg`; `Pillow` is now test-only.
 - CI runs on Linux, macOS and Windows with Python 3.10 to 3.13, and a daily read-only canary probes the real cloud.
 
+### Thanks
+
+To JasonC-AerisMapping for tracking down the `rm-filename` header change (#7) and the Cairo failure on Windows (#8), to tuzumkuru for diagnosing the SDK 2.0 import error (#9), and to everyone who reported setup problems (#1, #6).
+
 ### Migrating from 0.7
 
 1. Run `uvx rm-mcp@latest setup` once. It saves a token in rm-mcp's own file and can rewrite your Claude Code and Claude Desktop entries.
