@@ -19,7 +19,7 @@ cd rm-mcp
 uv sync --all-extras
 
 # Verify setup
-uv run pytest test_server.py -v
+uv run pytest tests/test_server.py -v
 ```
 
 ## Project Structure
@@ -56,7 +56,7 @@ rm-mcp/
 │   │   └── sampling.py    # MCP sampling-based OCR
 │   └── clients/
 │       └── cloud.py       # reMarkable Cloud API v3/v4 client
-├── test_server.py         # Test suite
+├── tests/                 # Test suite + fixtures/
 ├── setup.sh               # One-line installer
 ├── server.json            # MCP Registry definition
 ├── pyproject.toml         # Project config and dependencies
@@ -68,13 +68,13 @@ rm-mcp/
 
 ```bash
 # Run all tests
-uv run pytest test_server.py -v
+uv run pytest tests/test_server.py -v
 
 # Run specific test class
-uv run pytest test_server.py -v -k "TestClassName"
+uv run pytest tests/test_server.py -v -k "TestClassName"
 
 # Run with coverage
-uv run pytest test_server.py -v --cov=rm_mcp
+uv run pytest tests/test_server.py -v --cov=rm_mcp
 ```
 
 Tests use `pytest-asyncio` for async testing. All async tests use the `@pytest.mark.asyncio` decorator.
@@ -104,7 +104,7 @@ uv run ruff format .
 git checkout -b feature/my-feature
 
 # After making changes — add specific files, never use git add -A
-git add rm_mcp/tools/read.py test_server.py
+git add rm_mcp/tools/read.py tests/test_server.py
 git commit -m "feat: description of change"
 git push origin feature/my-feature
 # Then create PR via GitHub
@@ -117,10 +117,10 @@ git push origin feature/my-feature
 1. Create a new file in `rm_mcp/tools/` (e.g. `rm_mcp/tools/my_tool.py`)
 2. Register it in `rm_mcp/tools/__init__.py`
 3. Create unique `ToolAnnotations` with a descriptive title
-4. Add tests in `test_server.py`
+4. Add tests in `tests/test_server.py`
 5. Update the tools table in README.md
 6. Update `docs/tools.md` with detailed documentation
-7. Run tests: `uv run pytest test_server.py -v`
+7. Run tests: `uv run pytest tests/test_server.py -v`
 
 ### Tool Design Principles
 

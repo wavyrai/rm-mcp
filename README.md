@@ -309,7 +309,7 @@ Treat your reMarkable as a second brain that AI can access. Combined with tools 
 git clone https://github.com/wavyrai/rm-mcp.git
 cd rm-mcp
 uv sync --all-extras
-uv run pytest test_server.py -v
+uv run pytest tests/test_server.py -v
 ```
 
 📖 **[Development Guide](docs/development.md)**

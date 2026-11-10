@@ -35,8 +35,9 @@ rm_mcp/                   # Main package
     sampling.py           # Uses client LLM via MCP sampling (only backend)
   clients/
     cloud.py              # reMarkable Cloud API v3/v4 client
-test_server.py            # Unit tests — mocked client, response shapes
-test_integration.py       # Integration tests — fake library, real index/ZIP/PDF
+tests/test_server.py      # Unit tests — mocked client, response shapes
+tests/test_integration.py # Integration tests — fake library, real index/ZIP/PDF
+tests/test_fixtures.py    # Extraction against tests/fixtures (make_fixtures.py)
 setup.sh                  # One-line installer script
 server.json               # MCP Registry server definition
 server.py                 # Root-level backwards-compatible entry point
@@ -49,7 +50,7 @@ docs/                     # Documentation (tools, resources, capabilities, dev g
 ```bash
 uv sync --all-extras            # Install all dependencies
 uv run pytest -v                # Run all tests (unit + integration)
-uv run pytest test_integration.py -v  # Integration tests only
+uv run pytest tests/test_integration.py -v  # Integration tests only
 uv run ruff check .             # Lint
 uv run ruff format --check .    # Check formatting
 uv run ruff format .            # Auto-format
