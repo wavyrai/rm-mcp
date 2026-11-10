@@ -12,3 +12,12 @@ def _isolated_blob_store(tmp_path, monkeypatch):
     blobstore.reset_default_store()
     yield
     blobstore.reset_default_store()
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-goldens",
+        action="store_true",
+        default=False,
+        help="Rewrite tests/fixtures/goldens/*.png from the current renderer.",
+    )

@@ -13,9 +13,13 @@ Outputs:
     highlight.rm        v6 page with a highlighter glyph range over PDF text
     three_pages.pdf     3-page PDF with real (extractable) text
     small.epub          2-chapter EPUB
+    annotated_pdf.rmdoc document archive: three_pages.pdf, a .content whose
+                        page 2 was inserted on the tablet, and ink on pages
+                        1, 2 and 4 (page 3 is the PDF's page 2, unannotated)
 """
 
 import io
+import json
 import uuid
 import zipfile
 from pathlib import Path
@@ -63,16 +67,25 @@ def _write_rm(path: Path, blocks) -> None:
     path.write_bytes(buf.getvalue())
 
 
-def _stroke(points, item_id: CrdtId, left_id: CrdtId) -> SceneLineItemBlock:
+def _stroke(
+    points,
+    item_id: CrdtId,
+    left_id: CrdtId,
+    tool=si.Pen.FINELINER_2,
+    color=si.PenColor.BLACK,
+    width: int = 24,
+    color_rgba=None,
+) -> SceneLineItemBlock:
     line = si.Line(
-        color=si.PenColor.BLACK,
-        tool=si.Pen.FINELINER_2,
+        color=color,
+        tool=tool,
         points=[
-            si.Point(x=float(x), y=float(y), speed=0, direction=0, width=24, pressure=200)
+            si.Point(x=float(x), y=float(y), speed=0, direction=0, width=width, pressure=200)
             for x, y in points
         ],
         thickness_scale=2.0,
         starting_length=0.0,
+        color_rgba=color_rgba,
     )
     return SceneLineItemBlock(
         parent_id=LAYER,
@@ -203,14 +216,111 @@ def make_epub() -> None:
             _zip_add(zf, f"OEBPS/{name}", html)
 
 
+# PDF points to .rm units: the page sits at 226 dpi with x = 0 at its centre.
+_UNITS = 226 / 72
+_PDF_WIDTH = 595
+
+
+def _pdf_xy(x_pt: float, y_pt: float):
+    return (x_pt * _UNITS - _PDF_WIDTH * _UNITS / 2, y_pt * _UNITS)
+
+
+def _ellipse(cx, cy, rx, ry, steps: int = 36):
+    import math
+
+    return [
+        (cx + rx * math.cos(2 * math.pi * i / steps), cy + ry * math.sin(2 * math.pi * i / steps))
+        for i in range(steps + 1)
+    ]
+
+
+def _ink_page(strokes) -> bytes:
+    """A v6 page holding the given (points, style) strokes."""
+    blocks = _without_root_text(_base_blocks())
+    left = CrdtId(0, 0)
+    for n, (pts, style) in enumerate(strokes):
+        item_id = CrdtId(1, 300 + n)
+        blocks.append(_stroke(pts, item_id, left, **style))
+        left = item_id
+    buf = io.BytesIO()
+    write_blocks(buf, blocks, options={"version": "3.1"})
+    return buf.getvalue()
+
+
+ANNOTATED_DOC = "a0a0a0a0-0000-4000-8000-000000000001"
+# Tablet pages: (page id, source PDF page or None when inserted on the tablet).
+ANNOTATED_PAGES = [("pg-one", 0), ("pg-inserted", None), ("pg-two", 1), ("pg-three", 2)]
+
+
+def make_annotated_pdf() -> None:
+    # Page 1: the text line spans x 72-367 and y 87-104 in PDF points.
+    left, right = _pdf_xy(72, 0)[0], _pdf_xy(367, 0)[0]
+    y_text = _pdf_xy(0, 96)[1]
+    page_one = _ink_page(
+        [
+            (
+                _segment((left, y_text), (right, y_text), 20),
+                dict(
+                    tool=si.Pen.HIGHLIGHTER_2,
+                    color=si.PenColor.HIGHLIGHT,
+                    width=120,
+                    color_rgba=(255, 237, 117, 255),
+                ),
+            ),
+            (
+                _segment((left, y_text + 30), (right, y_text + 30), 20),
+                dict(tool=si.Pen.BALLPOINT_2, color=si.PenColor.RED, width=16),
+            ),
+        ]
+    )
+    # Inserted page: a large cross on an otherwise blank notebook page.
+    inserted = _ink_page(
+        [
+            (_segment((-300, 600), (300, 1200), 12), {}),
+            (_segment((300, 600), (-300, 1200), 12), {}),
+        ]
+    )
+    # PDF page 3: a blue ring around "zebras" at the end of the line.
+    cx, cy = _pdf_xy(279, 96)
+    page_three = _ink_page(
+        [(_ellipse(cx, cy, 110, 50), dict(tool=si.Pen.FINELINER_2, color=si.PenColor.BLUE))]
+    )
+    ink = {"pg-one": page_one, "pg-inserted": inserted, "pg-three": page_three}
+
+    pages = []
+    for n, (pid, redir) in enumerate(ANNOTATED_PAGES):
+        entry = {"id": pid, "idx": {"timestamp": "1:2", "value": f"b{n}"}}
+        if redir is not None:
+            entry["redir"] = {"timestamp": "1:2", "value": redir}
+        pages.append(entry)
+    content = {
+        "cPages": {"original": {"timestamp": "1:2", "value": 3}, "pages": pages},
+        "fileType": "pdf",
+        "formatVersion": 2,
+        "orientation": "portrait",
+        "originalPageCount": 3,
+        "pageCount": len(pages),
+    }
+    with zipfile.ZipFile(HERE / "annotated_pdf.rmdoc", "w") as zf:
+        _zip_add(zf, f"{ANNOTATED_DOC}.content", json.dumps(content, indent=2))
+        zf.writestr(
+            zipfile.ZipInfo(f"{ANNOTATED_DOC}.pdf", date_time=_FIXED_DATE),
+            (HERE / "three_pages.pdf").read_bytes(),
+        )
+        for pid, data in ink.items():
+            info = zipfile.ZipInfo(f"{ANNOTATED_DOC}/{pid}.rm", date_time=_FIXED_DATE)
+            zf.writestr(info, data)
+
+
 def main() -> None:
     make_typed_text()
     make_handwriting()
     make_highlight()
     make_pdf()
     make_epub()
+    make_annotated_pdf()
     for path in sorted(HERE.iterdir()):
-        if path.suffix in {".rm", ".pdf", ".epub"}:
+        if path.suffix in {".rm", ".pdf", ".epub", ".rmdoc"}:
             print(f"{path.name:20} {path.stat().st_size:6} bytes")
 
 
