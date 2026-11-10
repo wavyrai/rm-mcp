@@ -71,3 +71,29 @@ def test_epub_fixture_has_chapters(tmp_path):
     text = "\n".join(p.text for p in doc.pages)
     assert doc.kind == "epub"
     assert "lighthouses" in text and "tidal pools" in text
+
+
+def test_newer_firmware_page_reads_quietly(caplog):
+    """SceneInfo (block 13) with unparsed fields and an unknown block type.
+
+    rmscene 0.8 reads past both and logs at WARNING/INFO; those messages go to
+    rm-mcp's logger at DEBUG, and the strokes and typed text still read.
+    """
+    import logging
+
+    from rm_mcp.extract.render import read_scene, render_rm_file_to_png
+
+    caplog.set_level(logging.DEBUG)
+    text = extract_text_from_rm_file(FIXTURES / "future_format.rm")
+    tree = read_scene((FIXTURES / "future_format.rm").read_bytes())
+    png = render_rm_file_to_png(FIXTURES / "future_format.rm")
+
+    assert "\n".join(text).splitlines() == TYPED_LINES
+    lines = [i for i in tree.walk() if type(i).__name__ == "Line"]
+    assert len(lines) == 2 and png
+    loud = [r for r in caplog.records if r.name.startswith("rmscene") and r.levelno > 10]
+    assert loud == []
+    quiet = [r for r in caplog.records if r.name == "rm_mcp.extract.rmscene"]
+    messages = " ".join(r.getMessage() for r in quiet)
+    assert "block_type=13" in messages and "Unknown block type 126" in messages
+    assert all(r.levelno == logging.DEBUG for r in quiet)

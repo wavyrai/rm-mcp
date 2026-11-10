@@ -11,6 +11,10 @@ Outputs:
     typed_text.rm       v6 page whose text lives in the root text block
     handwriting.rm      v6 page with fineliner strokes drawing a house
     highlight.rm        v6 page with a highlighter glyph range over PDF text
+    future_format.rm    typed text and the house strokes as newer firmware
+                        writes them: a SceneInfo block (type 13) with fields
+                        rmscene 0.8 does not parse, and a block type it does
+                        not know at all
     three_pages.pdf     3-page PDF with real (extractable) text
     small.epub          2-chapter EPUB
     annotated_pdf.rmdoc document archive: three_pages.pdf, a .content whose
@@ -30,11 +34,14 @@ from rmscene.crdt_sequence import CrdtSequenceItem
 from rmscene.scene_stream import (
     RootTextBlock,
     SceneGlyphItemBlock,
+    SceneInfo,
     SceneLineItemBlock,
+    UnreadableBlock,
     simple_text_document,
     write_blocks,
 )
-from rmscene.tagged_block_common import CrdtId
+from rmscene.tagged_block_common import CrdtId, LwwValue
+from rmscene.tagged_block_reader import MainBlockInfo
 
 HERE = Path(__file__).resolve().parent
 AUTHOR = uuid.UUID("5f0c6f0e-8b8a-4d1e-9b52-2b6a3c7d9e01")
@@ -123,6 +130,46 @@ def make_handwriting() -> None:
         blocks.append(_stroke(pts, item_id, left))
         left = item_id
     _write_rm(HERE / "handwriting.rm", blocks)
+
+
+def _house_strokes():
+    walls = _segment((-200, 600), (200, 600)) + _segment((200, 600), (200, 1000))[1:]
+    walls += _segment((200, 1000), (-200, 1000))[1:] + _segment((-200, 1000), (-200, 600))[1:]
+    roof = _segment((-240, 620), (0, 380)) + _segment((0, 380), (240, 620))[1:]
+    blocks, left = [], CrdtId(0, 0)
+    for n, pts in enumerate([walls, roof]):
+        item_id = CrdtId(1, 100 + n)
+        blocks.append(_stroke(pts, item_id, left))
+        left = item_id
+    return blocks
+
+
+def make_future_format() -> None:
+    """A page with data rmscene 0.8 reads past: it logs, and must still read the page.
+
+    Newer firmware writes SceneInfo (block type 13, 0x0D) with fields after
+    paper_size; rmscene keeps them as extra_data and logs "Some data has not
+    been read" and "In MainBlockInfo(... block_type=13 ...) only read N bytes".
+    An unknown block type logs "Unknown block type" and is skipped.
+    """
+    scene_info = SceneInfo(
+        current_layer=LwwValue(CrdtId(0, 1), LAYER),
+        background_visible=LwwValue(CrdtId(0, 1), True),
+        root_document_visible=LwwValue(CrdtId(0, 1), True),
+        paper_size=(1404, 1872),
+    )
+    # A tagged sub-block 6 of four bytes, as a newer field would be.
+    scene_info.extra_data = bytes([0x6C, 0x04, 0x00, 0x00, 0x00, 1, 2, 3, 4])
+    unknown = UnreadableBlock(
+        error="",
+        data=b"\x00" * 8,
+        info=MainBlockInfo(offset=0, size=8, block_type=0x7E, min_version=1, current_version=1),
+    )
+    blocks = _base_blocks(TYPED_TEXT)
+    blocks.insert(3, scene_info)
+    blocks.insert(4, unknown)
+    blocks += _house_strokes()
+    _write_rm(HERE / "future_format.rm", blocks)
 
 
 def make_highlight() -> None:
@@ -316,6 +363,7 @@ def main() -> None:
     make_typed_text()
     make_handwriting()
     make_highlight()
+    make_future_format()
     make_pdf()
     make_epub()
     make_annotated_pdf()
