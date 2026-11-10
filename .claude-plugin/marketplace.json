@@ -1,0 +1,15 @@
+{
+  "name": "rm-mcp",
+  "description": "reMarkable tablet tools for Claude Code",
+  "owner": {
+    "name": "Thijs Verreck",
+    "url": "https://github.com/wavyrai"
+  },
+  "plugins": [
+    {
+      "name": "remarkable",
+      "source": "./plugin",
+      "description": "Find, read, view and transcribe your reMarkable notes; send documents to the tablet."
+    }
+  ]
+}

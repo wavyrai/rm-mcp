@@ -2,80 +2,122 @@
 reMarkable Cloud API client helpers.
 """
 
-import json as json_module
 import logging
 import os
-from pathlib import Path
+import threading
 from typing import Optional
 
+from rm_mcp import auth
 from rm_mcp.models import RemarkableClientProtocol
-
-# Configuration - check env var first, then fall back to file
-REMARKABLE_TOKEN = os.environ.get("REMARKABLE_TOKEN")
 
 logger = logging.getLogger(__name__)
 
 # --- Singleton client ---
 _client_singleton: Optional[RemarkableClientProtocol] = None
+# Where the singleton's token came from, and the token file's (mtime, size)
+# when it was read. A client built from our token file is rebuilt when
+# `rm-mcp setup` replaces the file, so a running server picks up the new login.
+_client_source: Optional[auth.TokenSource] = None
+_client_signature: Optional[tuple] = None
+_lock = threading.Lock()
 
 
 def get_rmapi() -> Optional[RemarkableClientProtocol]:
     """
     Get or initialize the reMarkable API client.
 
-    Uses a singleton pattern so the client is only created once per process.
-    Returns None if no token is configured (unauthenticated mode).
+    The token is read from rm-mcp's token file, then REMARKABLE_TOKEN, then the
+    legacy ~/.rmapi (see rm_mcp.auth). Returns None if there is no token.
     """
-    global _client_singleton
+    global _client_singleton, _client_source, _client_signature
 
-    # Return cached client if available
-    if _client_singleton is not None:
-        return _client_singleton
+    with _lock:
+        if _client_singleton is not None and not _token_file_replaced():
+            return _client_singleton
 
-    # Cloud API mode
-    from rm_mcp.clients.cloud import load_client_from_token
+        from rm_mcp.clients.cloud import load_client_from_token
 
-    # If token is provided via environment, use it
-    if REMARKABLE_TOKEN:
-        _client_singleton = load_client_from_token(REMARKABLE_TOKEN)
-        return _client_singleton
+        source = auth.find_token() or _redeem_one_time_code()
+        if source is None:
+            _client_singleton = _client_source = _client_signature = None
+            return None
+        try:
+            client = load_client_from_token(source.data)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize reMarkable client: {e}")
+        if source.kind == "file":
+            client.on_token_renewed = _save_renewed_user_token
+        _client_singleton, _client_source = client, source
+        _client_signature = auth.file_signature(source.path) if source.path else None
+        return client
 
-    # Load from file
-    rmapi_file = Path.home() / ".rmapi"
-    if not rmapi_file.exists():
+
+def _redeem_one_time_code() -> Optional[auth.TokenSource]:
+    """With no token anywhere, register with REMARKABLE_ONE_TIME_CODE (the Desktop bundle).
+
+    The token goes to our file, so the next start finds it and the code, which
+    works only once, is never sent again.
+    """
+    code = os.environ.get(auth.CODE_ENV_VAR, "").strip()
+    if not code:
         return None
-
     try:
-        token_json = rmapi_file.read_text()
-        _client_singleton = load_client_from_token(token_json)
-        return _client_singleton
+        register_and_get_token(code)
     except Exception as e:
-        raise RuntimeError(f"Failed to initialize reMarkable client: {e}")
+        raise RuntimeError(
+            f"{auth.CODE_ENV_VAR} was set but registration failed: {e} "
+            "Codes work once; get a new one at https://my.remarkable.com/device/apps/connect"
+        )
+    return auth.find_token()
+
+
+def current_source() -> Optional[auth.TokenSource]:
+    """Where the active (or next) client's token comes from."""
+    return _client_source or auth.find_token()
+
+
+def _token_file_replaced() -> bool:
+    """True when setup has written our token file since the client was built from it,
+    or since a client was built from REMARKABLE_TOKEN or ~/.rmapi."""
+    global _client_signature
+    if _client_source is None:
+        return False
+    if _client_source.kind != "file":
+        # Setup has written our file since this client started from env or ~/.rmapi.
+        return auth.file_signature(auth.token_path()) is not None
+    signature = auth.file_signature(_client_source.path)
+    if signature == _client_signature:
+        return False
+    try:
+        current = auth.parse(auth._read(_client_source.path))["devicetoken"]
+    except ValueError:
+        return True
+    if current != getattr(_client_singleton, "device_token", None):
+        return True
+    _client_signature = signature
+    return False
+
+
+def _save_renewed_user_token(user_token: str) -> None:
+    global _client_signature
+    path = _client_source.path if _client_source is not None else None
+    if path is None:
+        return
+    auth.save_user_token(user_token, path)
+    _client_signature = auth.file_signature(path)
 
 
 def register_and_get_token(one_time_code: str) -> str:
     """
-    Register with reMarkable using a one-time code and return the token.
+    Register with reMarkable using a one-time code and save the token to
+    rm-mcp's own token file (never ~/.rmapi). Returns the file's path.
 
     Get a code from: https://my.remarkable.com/device/apps/connect
     """
     from rm_mcp.clients.cloud import register_device
 
-    try:
-        token_data = register_device(one_time_code)
-
-        # Save to ~/.rmapi for compatibility
-        rmapi_file = Path.home() / ".rmapi"
-        token_json = json_module.dumps(token_data)
-        fd = os.open(str(rmapi_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, token_json.encode())
-        finally:
-            os.close(fd)
-
-        return token_json
-    except Exception as e:
-        raise RuntimeError(str(e))
+    token_data = register_device(one_time_code, auth.device_desc())
+    return str(auth.save_token(token_data))
 
 
 def get_file_type(client, doc) -> str:
@@ -107,7 +149,12 @@ def get_file_type(client, doc) -> str:
             if lowered.endswith(".epub"):
                 return "epub"
 
-    # Fall back to the visible name when the blob list is unavailable.
+    # Next, the .content file's fileType, read at sync time.
+    content_type = getattr(doc, "file_type", None)
+    if content_type in ("pdf", "epub"):
+        return content_type
+
+    # Fall back to the visible name when neither says.
     name = doc.VissibleName.lower()
     if name.endswith(".pdf"):
         return "pdf"

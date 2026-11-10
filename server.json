@@ -2,27 +2,44 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.wavyrai/rm-mcp",
   "title": "reMarkable MCP Server",
-  "description": "Access your reMarkable tablet - read documents, browse files, extract text and OCR handwritten notes",
+  "description": "Find, read, view and transcribe reMarkable notes; send PDFs to the tablet. Never deletes.",
   "repository": {
     "url": "https://github.com/wavyrai/rm-mcp",
     "source": "github"
   },
-  "version": "0.7.0",
+  "websiteUrl": "https://github.com/wavyrai/rm-mcp",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
       "identifier": "rm-mcp",
-      "version": "0.7.0",
+      "version": "2.0.0",
+      "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "REMARKABLE_TOKEN",
-          "description": "Authentication token for reMarkable Cloud API. Get one by registering at https://my.remarkable.com/device/apps/connect",
-          "isRequired": true,
+          "description": "Optional. Run `uvx rm-mcp@latest setup` instead: it saves a token rm-mcp reads first. This variable is used only when that file is absent.",
+          "isRequired": false,
           "format": "string",
           "isSecret": true
+        },
+        {
+          "name": "REMARKABLE_ROOT_PATH",
+          "description": "Optional. Show only this folder of the library, such as /Work.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "REMARKABLE_READ_ONLY",
+          "description": "Optional. Set to 1 to refuse every write.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false
         }
       ]
     }

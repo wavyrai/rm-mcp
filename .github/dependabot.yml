@@ -5,8 +5,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
     commit-message:
       prefix: "deps"
 
@@ -15,8 +13,5 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - ci
     commit-message:
       prefix: "ci"

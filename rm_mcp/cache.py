@@ -50,7 +50,7 @@ def get_cached_collection() -> Tuple[Any, List]:
 
     client = get_rmapi()
     if client is None:
-        raise RuntimeError("Not authenticated. Run: uvx rm-mcp --setup")
+        raise RuntimeError("Not authenticated. Run: uvx rm-mcp@latest setup")
     now = time.time()
 
     # If we have a valid cache within TTL, return immediately
@@ -78,15 +78,19 @@ def get_cached_collection() -> Tuple[Any, List]:
             _cache_timestamp = time.time()
         return client, collection
 
+    # A sync that could not fetch every document is retried even when the root
+    # has not moved; the client only refetches what it is missing.
+    sync_complete = getattr(client, "sync_complete", True) is not False
     with _collection_lock:
-        if _cached_collection is not None and current_hash == _cached_root_hash:
+        if _cached_collection is not None and current_hash == _cached_root_hash and sync_complete:
             # Nothing changed, refresh timestamp
             logger.debug("Collection cache hit (root hash unchanged)")
             _cache_timestamp = time.time()
             return client, _cached_collection
 
-    # Root hash changed or no cache — full re-fetch
-    logger.debug("Collection cache miss — fetching full collection")
+    # Root hash changed or no cache. The cloud client syncs incrementally, so
+    # this fetches only the documents whose hash changed.
+    logger.debug("Collection cache miss — syncing collection")
     collection = client.get_meta_items(root_hash=current_hash)
     with _collection_lock:
         _cached_collection = collection
@@ -140,50 +144,33 @@ def invalidate_collection_cache() -> None:
 
 
 # =============================================================================
-# Extraction cache (from extract.py)
+# Page transcripts
 # =============================================================================
+#
+# A transcript is text an agent wrote for a handwritten page after looking at
+# it (remarkable_save_transcript); older versions stored sampling OCR the same
+# way. It is keyed by (page_hash, backend), where page_hash is the content hash
+# of everything the page renders from (extract.pages.page_content_hashes), so
+# editing a page drops its transcript and editing another page keeps it.
+#
+# Written from worker threads and read from the loop, so access holds a lock.
 
-# Cache TTL in seconds (5 minutes)
-EXTRACTION_CACHE_TTL_SECONDS = 300
+TRANSCRIPT_BACKEND = "transcript"
+# Read as a fallback: OCR saved by versions that transcribed through sampling.
+LEGACY_OCR_BACKEND = "sampling"
 
-# Maximum cache sizes to prevent unbounded memory growth
-_MAX_EXTRACTION_CACHE_SIZE = 50
+PAGE_OCR_TTL_SECONDS = 300
 _MAX_PAGE_OCR_CACHE_SIZE = 200
 
-# Module-level cache for OCR results (full document)
-# Key: doc_id
-# Value: {"result": extraction_result, "include_ocr": bool, "timestamp": float}
-_extraction_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_derived_lock = threading.RLock()
 
-# Per-page cache for sampling OCR results
-# Key: (doc_id, page_number, backend)
-# Value: {"text": str, "timestamp": float}
+# Key: (page_hash, backend). Value: {"text": str, "timestamp": float}
 _page_ocr_cache: "OrderedDict[tuple, Dict[str, Any]]" = OrderedDict()
 
 
-def _is_cache_valid(cached: Dict[str, Any]) -> bool:
-    """Check if a cached entry is still valid based on TTL."""
-    if "timestamp" not in cached:
-        return False  # Unknown age = stale
-    return (time.time() - cached["timestamp"]) < EXTRACTION_CACHE_TTL_SECONDS
-
-
-def clear_extraction_cache(doc_id: Optional[str] = None) -> None:
-    """
-    Clear the extraction cache.
-
-    Args:
-        doc_id: If provided, only clear cache for this document.
-                If None, clear the entire cache.
-    """
-    if doc_id:
-        _extraction_cache.pop(doc_id, None)
-        # Also clear per-page cache entries for this document
-        keys_to_remove = [k for k in _page_ocr_cache if k[0] == doc_id]
-        for key in keys_to_remove:
-            _page_ocr_cache.pop(key, None)
-    else:
-        _extraction_cache.clear()
+def clear_page_ocr_cache() -> None:
+    """Drop the in-memory transcript cache (the index keeps its copy)."""
+    with _derived_lock:
         _page_ocr_cache.clear()
 
 
@@ -191,48 +178,40 @@ def get_cached_page_ocr(
     doc_id: str,
     page: int,
     backend: str,
+    page_hash: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Get cached OCR result for a specific page.
+    Get the stored text for exactly these page contents.
 
-    Checks L1 (in-memory) first, then falls back to L2 (SQLite index).
-    On L2 hit, promotes the result back to L1.
-
-    Args:
-        doc_id: Document ID
-        page: Page number (1-indexed)
-        backend: OCR backend used ("sampling")
-
-    Returns:
-        Cached OCR text or None if not cached/expired
+    Checks L1 (in-memory) first, then L2 (the index's content-addressed
+    page_ocr table). Without a page hash there is no way to know stored text
+    matches the page, so nothing is returned.
     """
-    # L1: in-memory cache
-    cache_key = (doc_id, page, backend)
-    if cache_key in _page_ocr_cache:
-        cached = _page_ocr_cache[cache_key]
-        if _is_cache_valid(cached):
-            _page_ocr_cache.move_to_end(cache_key)
-            return cached["text"]
-        # Expired, remove it
-        _page_ocr_cache.pop(cache_key, None)
+    if not page_hash:
+        return None
+    cache_key = (page_hash, backend)
+    with _derived_lock:
+        cached = _page_ocr_cache.get(cache_key)
+        if cached is not None:
+            if (time.time() - cached["timestamp"]) < PAGE_OCR_TTL_SECONDS:
+                _page_ocr_cache.move_to_end(cache_key)
+                return cached["text"]
+            _page_ocr_cache.pop(cache_key, None)
 
-    # L2: SQLite index
     try:
         from rm_mcp.index import get_instance
 
         index = get_instance()
         if index is not None:
-            text = index.get_page_ocr(doc_id, page, backend)
+            text = index.get_page_ocr_by_hash(page_hash, backend)
             if text is not None:
-                # Promote to L1
-                _page_ocr_cache[cache_key] = {
-                    "text": text,
-                    "timestamp": time.time(),
-                }
-                logger.debug(f"L2 cache hit for page OCR: {doc_id} p{page}")
+                with _derived_lock:
+                    _page_ocr_cache[cache_key] = {"text": text, "timestamp": time.time()}
+                    _trim(_page_ocr_cache, _MAX_PAGE_OCR_CACHE_SIZE)
+                logger.debug("L2 hit for page text: %s p%d", doc_id, page)
                 return text
     except Exception:
-        logger.debug("L2 read failed for page OCR", exc_info=True)
+        logger.warning("L2 read failed for page text", exc_info=True)
 
     return None
 
@@ -242,100 +221,36 @@ def cache_page_ocr(
     page: int,
     backend: str,
     text: str,
+    page_hash: str,
 ) -> None:
     """
-    Cache OCR result for a specific page.
+    Store text for a page under its content hash, and make it searchable.
 
-    Writes to both L1 (in-memory) and L2 (SQLite index).
-
-    Args:
-        doc_id: Document ID
-        page: Page number (1-indexed)
-        backend: OCR backend used ("sampling")
-        text: OCR text result
+    Raises if the index cannot store it: a transcript the caller was told is
+    saved must not exist only in memory.
     """
-    # L1: in-memory cache
-    cache_key = (doc_id, page, backend)
-    _page_ocr_cache[cache_key] = {
-        "text": text,
-        "timestamp": time.time(),
-    }
-    _page_ocr_cache.move_to_end(cache_key)
-    while len(_page_ocr_cache) > _MAX_PAGE_OCR_CACHE_SIZE:
-        _page_ocr_cache.popitem(last=False)
+    from rm_mcp.index import get_instance
 
-    # L2: write-through to SQLite index
-    try:
-        from rm_mcp.index import get_instance
-
-        index = get_instance()
-        if index is not None:
-            index.upsert_page(doc_id, page, text, "ocr", backend)
-    except Exception:
-        logger.warning("Could not persist page OCR to the index", exc_info=True)
+    index = get_instance()
+    if index is None:
+        raise RuntimeError("The local index is unavailable, so the transcript cannot be stored.")
+    index.put_page_ocr_by_hash(page_hash, backend, text)
+    index.upsert_page(doc_id, page, text, "ocr", backend)
+    with _derived_lock:
+        _page_ocr_cache[(page_hash, backend)] = {"text": text, "timestamp": time.time()}
+        _page_ocr_cache.move_to_end((page_hash, backend))
+        _trim(_page_ocr_cache, _MAX_PAGE_OCR_CACHE_SIZE)
 
 
-def get_cached_ocr_result(
-    doc_id: str,
-    include_ocr: bool = True,
-    ocr_backend: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """
-    Get cached OCR result for a document if available and valid.
-
-    Args:
-        doc_id: Document ID to look up
-        include_ocr: Whether OCR content is required
-        ocr_backend: If specified, only return cache if it was produced by this backend.
-                     Use "sampling". None accepts any backend.
-
-    Returns:
-        Cached result dict or None if not cached/expired/wrong backend
-    """
-    if doc_id in _extraction_cache:
-        cached = _extraction_cache[doc_id]
-        if (cached["include_ocr"] or not include_ocr) and _is_cache_valid(cached):
-            # Check backend match if specified
-            if ocr_backend is not None:
-                cached_backend = cached["result"].get("ocr_backend")
-                if cached_backend != ocr_backend:
-                    return None
-            _extraction_cache.move_to_end(doc_id)
-            return cached["result"]
+def get_page_transcript(doc_id: str, page: int, page_hash: Optional[str]) -> Optional[str]:
+    """The saved transcript of a page, falling back to legacy sampling OCR."""
+    for backend in (TRANSCRIPT_BACKEND, LEGACY_OCR_BACKEND):
+        text = get_cached_page_ocr(doc_id, page, backend, page_hash=page_hash)
+        if text is not None:
+            return text
     return None
 
 
-def cache_ocr_result(
-    doc_id: str,
-    result: Dict[str, Any],
-    include_ocr: bool = True,
-) -> None:
-    """
-    Cache an OCR result for a document.
-
-    Writes to both L1 (in-memory) and L2 (SQLite index).
-
-    Args:
-        doc_id: Document ID
-        result: Extraction result dict with keys: typed_text, highlights,
-                handwritten_text, pages, page_ids, ocr_backend
-        include_ocr: Whether this result includes OCR content
-    """
-    _extraction_cache[doc_id] = {
-        "result": result,
-        "include_ocr": include_ocr,
-        "timestamp": time.time(),
-    }
-    _extraction_cache.move_to_end(doc_id)
-    while len(_extraction_cache) > _MAX_EXTRACTION_CACHE_SIZE:
-        _extraction_cache.popitem(last=False)
-
-    # L2: write-through to SQLite index
-    try:
-        from rm_mcp.index import get_instance
-
-        index = get_instance()
-        if index is not None:
-            index.store_extraction_result(doc_id, result)
-    except Exception:
-        logger.warning("Could not persist extraction result to the index", exc_info=True)
+def _trim(cache: "OrderedDict", max_size: int) -> None:
+    while len(cache) > max_size:
+        cache.popitem(last=False)

@@ -1,307 +1,153 @@
-# reMarkable MCP Server
+# rm-mcp: your reMarkable in Claude
 
-Unlock the full potential of your reMarkable tablet as a **second brain** for AI assistants. This MCP server lets Claude, VS Code Copilot, and other AI tools read, search, and traverse your entire reMarkable library — including handwritten notes via OCR.
+rm-mcp is an MCP server that lets Claude (and other MCP clients) find, read and look at everything on your reMarkable tablet: notebooks, PDFs, EPUBs, highlights and handwriting. It can also send documents to the tablet and tidy your folders. It never deletes anything.
 
 <!-- mcp-name: io.github.wavyrai/rm-mcp -->
 
-## Why rm-mcp?
+- **Find anything**: search names, typed text, PDF and EPUB text, highlights and the transcripts of your handwriting.
+- **Read handwriting**: Claude looks at the page and writes down what it says. The transcript is saved, so the page becomes searchable.
+- **Send to the tablet**: a PDF, an EPUB, a link to one, or Markdown that is typeset into a clean PDF.
+- **Organise safely**: rename, move and create folders in one batch, as a dry run first, with undo.
 
-Your reMarkable tablet is a powerful tool for thinking, note-taking, and research. But that knowledge stays trapped on the device. This MCP server changes that:
-
-- **Full library access** — Browse folders, search documents, read any file
-- **Typed text extraction** — Native support for Type Folio and typed annotations
-- **Handwriting OCR** — Convert handwritten notes to searchable text
-- **PDF & EPUB support** — Extract text from documents, plus your annotations
-- **Smart search** — Find content across your entire library
-- **Organise your library** — Rename, move, and create folders (nothing is ever deleted)
-- **Second brain integration** — Use with Obsidian, note-taking apps, or any AI workflow
-
-Whether you're researching, writing, or developing ideas, rm-mcp lets you leverage everything on your reMarkable through AI.
+It works through the reMarkable Cloud, so your tablet needs cloud sync turned on (see the [FAQ](#faq)).
 
 ---
 
-## Quick Install
+## Install
 
-Uses the reMarkable Cloud API. Requires a reMarkable Connect subscription.
+Pick the app you use. Every path ends with the same one-time sign-in to your reMarkable account.
 
-### One-command setup (recommended)
+### Claude Code (plugin)
+
+In Claude Code:
+
+```
+/plugin marketplace add wavyrai/rm-mcp
+/plugin install remarkable@rm-mcp
+```
+
+Or in one step on Claude Code 2.1.275 or later:
+
+```
+/plugin install remarkable --marketplace wavyrai/rm-mcp
+```
+
+Then connect your reMarkable once, in a terminal:
 
 ```bash
-uvx rm-mcp --setup
+uvx rm-mcp@latest setup --no-clients
 ```
 
-This opens your browser, prompts for the one-time code, and prints the ready-to-paste config for Claude Code and Claude Desktop.
+The plugin adds the server plus three skills: `/remarkable:transcribe-notebook-to-markdown` (a notebook to an Obsidian-ready `.md` file), `/remarkable:send-to-remarkable` and `/remarkable:weekly-review`.
 
-### Manual setup
+### Claude Desktop (bundle)
 
-#### 1. Get a One-Time Code
+Download `rm-mcp-2.0.0.mcpb` from the [latest release](https://github.com/wavyrai/rm-mcp/releases/latest) and open it; Claude Desktop shows an install dialog. Get a one-time code at [my.remarkable.com/device/apps/connect](https://my.remarkable.com/device/apps/connect) and paste it into the **One-time code** field. rm-mcp swaps it for a token on first start and keeps that in its own file. If you already ran `rm-mcp setup` on this computer, leave the field empty.
 
-Go to [my.remarkable.com/device/browser/connect](https://my.remarkable.com/device/apps/connect) and generate a code.
-
-#### 2. Convert to Token
+### Any client, with uv
 
 ```bash
-uvx rm-mcp --register YOUR_CODE
+uvx rm-mcp@latest setup
 ```
 
-#### 3. Add to your MCP client
+This opens the code page, asks for the code, saves the token, and then asks whether to add rm-mcp to Claude Code and to Claude Desktop. It changes a Desktop config only if it can read it, and keeps the old one as `claude_desktop_config.json.bak`.
 
-**Claude Code:**
+No uv yet? `curl -fsSL https://thijsverreck.com/setup.sh | sh` installs [uv](https://docs.astral.sh/uv/) and runs the same command. On Windows, install uv with `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`, then run `uvx rm-mcp@latest setup`.
+
+To add rm-mcp to another MCP client by hand, run `uvx rm-mcp@latest` over stdio (for clients with a short PATH, such as Claude Desktop, use the full path to `uvx`). No token belongs in the client config.
+
+### Check and sign out
 
 ```bash
-claude mcp add remarkable \
-  -e REMARKABLE_TOKEN='<paste token from step 2>' \
-  -e REMARKABLE_OCR_BACKEND=sampling \
-  -- uvx rm-mcp@latest
+uvx rm-mcp@latest doctor   # token, connection, uvx, client configs, with fixes
+uvx rm-mcp@latest logout   # removes rm-mcp's token file
 ```
 
-**Claude Desktop** — add to `claude_desktop_config.json` (use full path to `uvx`, e.g. from `which uvx`):
-
-```json
-{
-  "mcpServers": {
-    "remarkable": {
-      "command": "/Users/YOU/.local/bin/uvx",
-      "args": ["rm-mcp@latest"],
-      "env": {
-        "REMARKABLE_TOKEN": "<paste token from step 2>"
-      }
-    }
-  }
-}
-```
-
----
-
-<!-- Screenshots section - uncomment when screenshots are added
-## Screenshots
-
-### MCP Resources
-
-Documents appear as resources that AI assistants can access directly:
-
-![Resources in VS Code](docs/assets/resources-screenshot.png)
-
-### Tool Calls in Action
-
-AI assistants use the tools to read documents, search content, and more:
-
-![Tool calls in VS Code](docs/assets/tool-calls-screenshot.png)
--->
+The token lives in `~/.config/rm-mcp/token.json` (Linux), `~/Library/Application Support/rm-mcp/token.json` (macOS) or `%APPDATA%\rm-mcp\token.json` (Windows), readable only by you.
 
 ---
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `remarkable_read` | Read and extract text from documents (with pagination and search) |
-| `remarkable_browse` | Navigate folders in your library |
-| `remarkable_search` | Search content across multiple documents |
-| `remarkable_recent` | Get recently modified documents |
-| `remarkable_status` | Check connection status |
-| `remarkable_image` | Get PNG/SVG images of pages (supports OCR via sampling) |
+| Tool | What it does |
+|------|--------------|
+| `remarkable_find` | Search names, text, highlights and transcripts; with no query, lists recent documents |
+| `remarkable_list` | The folder tree with ids, types, page counts and dates |
+| `remarkable_read` | Text per tablet page; marks handwritten pages that have no transcript yet |
+| `remarkable_view` | Pages as images, up to 4 per call |
+| `remarkable_annotations` | Highlights, and the pages that carry handwriting |
+| `remarkable_save_transcript` | Keep Claude's transcript of a handwritten page (local index only) |
+| `remarkable_status` | Connection, library size, index and settings |
+| `remarkable_send` | Put a PDF, EPUB, URL or Markdown on the tablet |
+| `remarkable_organize` | Rename, move and create folders as one batch; dry run by default |
+| `remarkable_undo` | Revert an organize batch |
 
-All tools are **read-only** and return structured JSON with hints for next actions.
+Every result carries a stable document **id**; a path or a name works wherever an id does. Page numbers are tablet pages, so a page you inserted into a PDF counts.
 
-📖 **[Full Tools Documentation](docs/tools.md)**
+📖 [Tools reference](docs/tools.md) · [Resources](docs/resources.md)
 
-### Smart Features
+The server also offers three prompts (`transcribe_notebook`, `weekly_review`, `find_topic`) and two resource templates (`remarkable://doc/{id}` and `remarkable://doc/{id}/page/{n}.png`).
 
-- **Multi-page read** — Read all pages at once with `pages="all"`, or a range like `pages="1-3"`
-- **Grep auto-redirect** — `grep` automatically finds and jumps to the matching page
-- **Auto-redirect** — Browsing a document path returns its content automatically
-- **Auto-OCR** — Notebooks with no typed text automatically enable OCR (opt out with `auto_ocr=False`)
-- **Full-text search** — Reading a document indexes it for fast future searches
-- **Compact mode** — Use `compact_output=True` to reduce token usage in responses
-- **Batch search** — Search across multiple documents in one call
-- **Vision support** — Get page images for visual context (diagrams, mockups, sketches)
-- **Sampling OCR** — Use client's AI for OCR on images (no API key needed)
+## What rm-mcp promises
 
-### Example Usage
+- **It never deletes.** No code path removes a document, sends an HTTP DELETE or marks anything deleted; a test checks this. Undo leaves folders it created, and a send cannot be undone (remove it on the tablet if you don't want it).
+- **Writes stay where you allow them.** `REMARKABLE_READ_ONLY=1` refuses every write. `REMARKABLE_WRITE_ROOT` (default: `REMARKABLE_ROOT_PATH`) is the folder every write must stay inside; one path outside it refuses the whole batch before anything is uploaded.
+- **Organising is a dry run first.** `remarkable_organize` returns the exact plan and changes nothing until it is called again with `dry_run=false`.
+- **Every organize can be undone.** An applied batch returns an undo token. If rm-mcp can't record the undo (for example, the local index is unavailable), it refuses the batch instead of applying it.
+- **One batch, one commit.** Every write is a single update of the library, guarded so that nothing outside the batch can change, and based on the version it read, so a change from the tablet in the meantime is never overwritten.
+- **Renames and moves keep your "last opened" order.** They don't touch a document's modified time.
 
-```python
-# Read a document
-remarkable_read("Meeting Notes")
+## Handwriting
 
-# Read all pages at once
-remarkable_read("Meeting Notes", pages="all")
-
-# Read a range of pages
-remarkable_read("Research Paper", pages="1-3")
-
-# Search for keywords (auto-redirects to matching page)
-remarkable_read("Project Plan", grep="deadline")
-
-# Enable OCR for handwritten notes
-remarkable_read("Journal", include_ocr=True)
-
-# Browse your library
-remarkable_browse("/Work/Projects")
-
-# Search across documents
-remarkable_search("meeting", grep="action items")
-
-# Get recent documents with previews
-remarkable_recent(limit=5, include_preview=True)
-
-# Get a page image
-remarkable_image("UI Mockup", page=1)
-
-# Get image with OCR text extraction
-remarkable_image("Handwritten Notes", include_ocr=True)
-```
+rm-mcp doesn't run OCR. Claude already reads images: `remarkable_read` marks handwritten pages, `remarkable_view` shows them, and `remarkable_save_transcript` stores what Claude read. A transcript is tied to the page's content, so it stays until you edit that page on the tablet.
 
 ---
 
-## Resources
+## Settings
 
-Documents are automatically registered as MCP resources:
-
-| URI Scheme | Description |
-|------------|-------------|
-| `remarkable:///{path}.txt` | Extracted text content |
-| `remarkableimg:///{path}.page-{N}.png` | PNG image of page N (notebooks only) |
-| `remarkablesvg:///{path}.page-{N}.svg` | SVG vector image of page N (notebooks only) |
-
-📖 **[Full Resources Documentation](docs/resources.md)**
-
----
-
-## OCR for Handwriting
-
-rm-mcp uses **sampling OCR** — your MCP client's AI model extracts text from handwritten notes. No additional API keys or services needed.
-
-### How It Works
-
-When you use `include_ocr=True`, rm-mcp sends page images to your client's LLM (Claude, GPT-4, etc.) via MCP sampling. The model reads the handwriting and returns the text.
-
-### Usage
-
-```python
-# OCR on a page image
-remarkable_image("Handwritten Notes", include_ocr=True)
-
-# OCR when reading a notebook
-remarkable_read("Journal", include_ocr=True)
-```
-
-### Requirements
-
-- Your MCP client must support the **sampling** capability (VS Code + Copilot, Claude Desktop, etc.)
-- `REMARKABLE_OCR_BACKEND=sampling` (this is the default)
-
----
-
-## Advanced Configuration
-
-### Root Path Filtering
-
-Limit the MCP server to a specific folder on your reMarkable. All operations will be scoped to this folder:
-
-```json
-{
-  "servers": {
-    "remarkable": {
-      "command": "uvx",
-      "args": ["rm-mcp"],
-      "env": {
-        "REMARKABLE_TOKEN": "your-token",
-        "REMARKABLE_ROOT_PATH": "/Work"
-      }
-    }
-  }
-}
-```
-
-With this configuration:
-- `remarkable_browse("/")` shows contents of `/Work`
-- `remarkable_browse("/Projects")` shows `/Work/Projects`
-- Documents outside `/Work` are not accessible
-
-Useful for:
-- Focusing on work documents during office hours
-- Separating personal and professional notes
-- Limiting scope for specific AI workflows
-
-### Custom Background Color
-
-Set the default background color for image rendering:
-
-```json
-{
-  "servers": {
-    "remarkable": {
-      "command": "uvx",
-      "args": ["rm-mcp"],
-      "env": {
-        "REMARKABLE_TOKEN": "your-token",
-        "REMARKABLE_BACKGROUND_COLOR": "#FFFFFF"
-      }
-    }
-  }
-}
-```
-
-Supported formats:
-- `#RRGGBB` — RGB hex (e.g., `#FFFFFF` for white)
-- `#RRGGBBAA` — RGBA hex (e.g., `#00000000` for transparent)
-
-Default is `#FBFBFB` (reMarkable paper color). This affects both the `remarkable_image` tool and image resources.
-
-### All Environment Variables
+Set these as environment variables in the client config. Most people need none of them.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REMARKABLE_TOKEN` | *(required)* | Auth token from `uvx rm-mcp --setup` |
-| `REMARKABLE_ROOT_PATH` | `/` | Limit access to a specific folder |
-| `REMARKABLE_READ_ONLY` | *(off)* | Set to `1` to disable renaming, moving and creating folders |
-| `REMARKABLE_OCR_BACKEND` | `sampling` | OCR backend (`sampling`) |
-| `REMARKABLE_BACKGROUND_COLOR` | `#FBFBFB` | Background color for rendered images (`#RRGGBB` or `#RRGGBBAA`) |
-| `REMARKABLE_CACHE_TTL` | `60` | Collection cache TTL in seconds |
-| `REMARKABLE_COMPACT` | *(off)* | Set to `1` or `true` to omit hints from responses globally |
-| `REMARKABLE_MAX_OUTPUT_CHARS` | `50000` | Maximum characters in tool responses |
-| `REMARKABLE_PAGE_SIZE` | `8000` | PDF/EPUB page size in characters |
-| `REMARKABLE_PARALLEL_WORKERS` | `5` | Parallel workers for metadata fetching |
-| `REMARKABLE_INDEX_CONTENT` | `1` | Set to `0` to disable background indexing of PDF/EPUB text |
-| `REMARKABLE_INDEX_PATH` | `~/.cache/rm-mcp/index.db` | SQLite full-text search index location |
-| `REMARKABLE_INDEX_REBUILD` | *(off)* | Set to `1` to force index rebuild on startup |
-
-Most users only need `REMARKABLE_TOKEN`. The rest are for advanced tuning.
-
----
-
-## Use Cases
-
-### Research & Writing
-
-Use rm-mcp while working in an Obsidian vault or similar to transfer knowledge from your handwritten notes into structured documents. AI can read your research notes and help develop your ideas.
-
-### Daily Review
-
-Ask your AI assistant to summarize your recent notes, find action items, or identify patterns across your journal entries.
-
-### Document Search
-
-Find that half-remembered note by searching across your entire library — including handwritten content.
-
-### Knowledge Management
-
-Treat your reMarkable as a second brain that AI can access. Combined with tools like Obsidian, you can build a powerful personal knowledge system.
+| `REMARKABLE_ROOT_PATH` | `/` | Show only this folder, such as `/Work` |
+| `REMARKABLE_READ_ONLY` | off | `1` refuses every write (send, organize, undo) |
+| `REMARKABLE_WRITE_ROOT` | `REMARKABLE_ROOT_PATH` | Folder (full path) every write must stay inside |
+| `REMARKABLE_BACKGROUND_COLOR` | `#FBFBFB` | Page image background, `#RRGGBB` or `#RRGGBBAA` |
+| `REMARKABLE_MAX_OUTPUT_CHARS` | `50000` | Page text per `remarkable_read` call |
+| `REMARKABLE_CACHE_TTL` | `60` | Seconds before the library is checked for changes |
+| `REMARKABLE_INDEX_CONTENT` | `1` | `0` turns off background indexing of page text |
+| `REMARKABLE_INDEX_PATH` | `~/.cache/rm-mcp/index.db` | Search index (and undo log) location |
+| `REMARKABLE_INDEX_REBUILD` | off | `1` clears the search index at start (transcripts are kept) |
+| `REMARKABLE_BLOB_CACHE_MB` | `500` | Download cache size; `0` turns it off |
+| `REMARKABLE_BLOB_CACHE_DIR` | `~/.cache/rm-mcp/blobs` | Download cache location |
+| `REMARKABLE_PARALLEL_WORKERS` | `5` | Parallel metadata fetches |
+| `REMARKABLE_COMPACT` | off | `1` omits hints from the deprecated organising tools |
+| `REMARKABLE_TOKEN` | | Only used when rm-mcp's token file is absent |
 
 ---
 
-## Documentation
+## FAQ
 
-| Guide | Description |
-|-------|-------------|
-| [Tools Reference](docs/tools.md) | Detailed tool documentation |
-| [Resources Reference](docs/resources.md) | MCP resources documentation |
-| [Capability Negotiation](docs/capabilities.md) | MCP protocol capabilities |
-| [Development](docs/development.md) | Contributing and development setup |
-| [Future Plans](docs/future-plans.md) | Roadmap and planned features |
+**Do I need reMarkable Connect?**
+Yes, in practice. rm-mcp reads your library from the reMarkable Cloud, and only what your tablet syncs to the cloud is visible to it. Without a [Connect](https://remarkable.com/store/connect) subscription reMarkable limits cloud sync, so documents can be missing.
+
+**I re-ran setup but rm-mcp still uses the old account or an expired token.**
+Update to 2.0. Older versions let a `REMARKABLE_TOKEN` in the client config win over a new login. 2.0 reads its own token file first, and a running server picks up a new login without a restart. `uvx rm-mcp@latest doctor` shows which token is in use.
+
+**Claude Desktop says the server failed to start.**
+Run `uvx rm-mcp@latest doctor`. The usual cause is a `"command": "uvx"` without a full path; `rm-mcp setup` writes the full path.
+
+**Does it change my tablet?**
+Only when you ask it to send or organise something, and never by deleting. Set `REMARKABLE_READ_ONLY=1` to rule writes out.
+
+**Where does my data go?**
+Between your computer and the reMarkable Cloud only. The search index, transcripts and download cache stay in `~/.cache/rm-mcp`.
 
 ---
+
+## Upgrading from 0.x
+
+See [CHANGELOG.md](CHANGELOG.md#migrating-from-07). In short: run `uvx rm-mcp@latest setup` once, and remove `REMARKABLE_TOKEN`, `REMARKABLE_OCR_BACKEND` and `REMARKABLE_PAGE_SIZE` from your client configs. The 0.7 tool names still answer for one release.
 
 ## Development
 
@@ -309,17 +155,11 @@ Treat your reMarkable as a second brain that AI can access. Combined with tools 
 git clone https://github.com/wavyrai/rm-mcp.git
 cd rm-mcp
 uv sync --all-extras
-uv run pytest test_server.py -v
+uv run pytest
 ```
 
-📖 **[Development Guide](docs/development.md)**
-
----
+📖 [Development guide](docs/development.md)
 
 ## License
 
-MIT
-
----
-
-Built with [rmscene](https://github.com/ricklupton/rmscene), [PyMuPDF](https://pymupdf.readthedocs.io/), and inspiration from [ddvk/rmapi](https://github.com/ddvk/rmapi).
+MIT. Built with [rmscene](https://github.com/ricklupton/rmscene) and [PyMuPDF](https://pymupdf.readthedocs.io/), with thanks to [ddvk/rmapi](https://github.com/ddvk/rmapi).

@@ -1,546 +1,287 @@
 # MCP Tools Reference
 
-This document provides detailed documentation for all MCP tools provided by rm-mcp.
-
 ## Overview
 
-| Tool | Purpose |
-|------|---------|
-| [`remarkable_read`](#remarkable_read) | Read and search document content |
-| [`remarkable_browse`](#remarkable_browse) | Navigate folders and find documents |
-| [`remarkable_search`](#remarkable_search) | Search across multiple documents |
-| [`remarkable_recent`](#remarkable_recent) | Get recently modified documents |
-| [`remarkable_status`](#remarkable_status) | Check connection status |
-| [`remarkable_image`](#remarkable_image) | Get page images (PNG or SVG) |
-| [`remarkable_rename`](#remarkable_rename) | Rename a document or folder |
-| [`remarkable_move`](#remarkable_move) | Move an item into another folder |
-| [`remarkable_create_folder`](#remarkable_create_folder) | Create a new folder |
+| Tool | Purpose | Writes |
+|------|---------|--------|
+| [`remarkable_find`](#remarkable_find) | Search names, text, highlights and transcripts; no query lists recent documents | no |
+| [`remarkable_list`](#remarkable_list) | The folder tree with ids, types, page counts and dates | no |
+| [`remarkable_read`](#remarkable_read) | Text per tablet page | no |
+| [`remarkable_view`](#remarkable_view) | Page images with the ink (PNG) | no |
+| [`remarkable_annotations`](#remarkable_annotations) | Highlights and pages with handwriting | no |
+| [`remarkable_save_transcript`](#remarkable_save_transcript) | Keep a transcript of a handwritten page | local index only |
+| [`remarkable_status`](#remarkable_status) | Connection, index and settings | no |
+| [`remarkable_send`](#remarkable_send) | Put a PDF, EPUB, URL or Markdown on the tablet | adds a document |
+| [`remarkable_organize`](#remarkable_organize) | Rename, move, create folders as one batch (dry run first) | library structure |
+| [`remarkable_undo`](#remarkable_undo) | Revert an organize batch | library structure |
 
-The first six tools are **read-only**. The last three change the library's
-structure but never a document's contents, and none of them deletes anything.
-All return structured JSON with hints for logical next actions.
+Every tool except `remarkable_view` returns structured content and publishes an
+`outputSchema`. Failures are MCP tool errors whose message names the cause and
+the next step (for example "No document matches 'Quarterly Repot'. Did you mean
+'Quarterly Report'? Search with remarkable_find(...)").
 
-## Root Path Filtering
+## Documents are addressed by id
 
-All tools respect the `REMARKABLE_ROOT_PATH` environment variable. When configured, operations are scoped to that folder:
+Every document and folder has a stable id (a UUID) that survives renames and
+moves. Every result carries it; pass it to the next tool. A path
+(`/Work/Standup`) or a unique name (`Standup`) is also accepted and resolved.
+When several documents share a name, the error lists each one's path and id.
+
+## Pages are tablet pages
+
+Page numbers are the ones the tablet shows. A page inserted on the tablet into
+a PDF counts, and the PDF pages after it shift by one; `source_page` says which
+PDF/EPUB page sits underneath (null for an inserted page).
+
+## Handwriting and transcripts
+
+Handwriting has no text until someone reads it. `remarkable_read` marks a
+handwritten page `"handwriting": true, "transcript": null`. The agent looks at
+it with `remarkable_view`, then stores what it read with
+`remarkable_save_transcript`. From then on `remarkable_find` and
+`remarkable_read` include the transcript. It is stored under the page's content
+hash, so editing that page on the tablet drops it, and editing another page
+keeps it.
+
+rm-mcp does not run OCR itself. Earlier versions asked the client's model
+through MCP sampling; that is deprecated and Claude clients do not support it,
+so it was removed. Text saved by that OCR is still read as a transcript.
+
+## Root path filtering
+
+With `REMARKABLE_ROOT_PATH=/Work`, every tool sees only `/Work`, paths are
+relative to it (`/Work/Project` appears as `/Project`), and ids outside it are
+reported as not found.
+
+---
+
+## remarkable_find
+
+Search the library, or list recent documents.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | none | Words to look for. Omit to list the most recently modified documents. |
+| `folder` | string | none | Only documents under this folder (path or id). |
+| `type` | `notebook` \| `pdf` \| `epub` | none | Only this kind of document. |
+| `modified_after` | string | none | ISO date or datetime, e.g. `2026-11-01`. |
+| `limit` | int | 20 | Maximum results (max 100). |
+
+The query matches document names, typed text, PDF/EPUB text, highlights and
+saved transcripts. Page text is indexed in the background at startup and
+whenever a document is read; `index_coverage` says how much of the scope is
+searchable.
 
 ```json
 {
-  "env": {
-    "REMARKABLE_ROOT_PATH": "/Work"
-  }
+  "query": "zebras",
+  "results": [
+    {
+      "id": "a0a0a0a0-0000-4000-8000-000000000001",
+      "name": "Annotated paper",
+      "path": "/Annotated paper",
+      "type": "pdf",
+      "modified": "2025-06-15T15:10:00+00:00",
+      "page_count": 4,
+      "hits": [{"page": 4, "snippet": "Page three: the last page mentions zebras.", "source": "text"}],
+      "matched_on": ["text"]
+    }
+  ],
+  "total": 1,
+  "index_coverage": {"indexed": 5, "total": 5},
+  "hint": "1 document(s) match 'zebras'. Read one with remarkable_read(id='a0a0…', pages='4')."
 }
 ```
 
-With this configuration:
-- Paths in responses are relative to the root (e.g., `/Work/Project` appears as `/Project`)
-- Documents outside the root are not accessible
-- `remarkable_status()` shows the configured root and document count within that folder
+`source` is `text` (typed, PDF/EPUB text or highlights) or `transcript`.
+`matched_on` lists `name`, `text` and/or `transcript`.
 
----
+## remarkable_list
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `folder` | string | `/` | Folder path or id. |
+| `depth` | int | 1 | 1 lists the folder; 2 also lists inside its subfolders; up to 10. |
+| `sort` | `name` \| `modified` | `name` | Within each folder; folders come first. |
+| `limit` | int | 100 | Items per call (max 500). |
+| `cursor` | string | none | `next_cursor` from the previous call. |
+
+Each item has `id`, `name`, `path`, `type` (`folder`, `notebook`, `pdf`,
+`epub`), `modified`, `page_count` (known once read or indexed), `parent_id`,
+`depth`, and for folders `item_count`.
 
 ## remarkable_read
 
-**Read and extract text from a document.**
-
-### Parameters
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `document` | string | *required* | Document name or full path |
-| `content_type` | string | `"text"` | What content to extract |
-| `page` | int | `1` | Page number (single-page mode) |
-| `pages` | string | `None` | Multi-page spec: `"all"`, `"1-3"`, `"2,4,5"` |
-| `grep` | string | `None` | Search for keywords in content |
-| `include_ocr` | bool | `False` | Enable OCR for handwritten content |
-| `auto_ocr` | bool | `True` | Auto-retry with OCR on empty notebooks (set `False` to skip) |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
-
-### Content Types
-
-- **`"text"`** — Full extracted text: raw document content plus annotations, highlights, and typed text (default)
-- **`"annotations"`** — Only annotations: highlights, typed text from notebooks, and OCR content
-
-### Examples
-
-```python
-# Read first page of a document
-remarkable_read("Meeting Notes")
-
-# Read all pages at once
-remarkable_read("Meeting Notes", pages="all")
-
-# Read a range of pages
-remarkable_read("Research Paper", pages="1-3")
-
-# Read specific pages
-remarkable_read("Notes", pages="2,4,5")
-
-# Search for keywords (auto-redirects to matching page)
-remarkable_read("Project Plan", grep="deadline")
-
-# Get only annotations and highlights
-remarkable_read("Book.pdf", content_type="annotations")
-
-# Enable OCR for handwritten notes
-remarkable_read("Journal", include_ocr=True)
-
-# Skip auto-OCR on empty notebooks
-remarkable_read("Blank Notebook", auto_ocr=False)
-
-# Read by full path
-remarkable_read("/Work/Projects/Q4 Planning")
-```
-
-### Response Format
+| `id` | string | required | Document id; a path or name also works. |
+| `pages` | string | `1-5` | `3`, `1-5`, `2,4`, `7-` or `all`. |
 
 ```json
 {
-  "name": "Meeting Notes",
-  "path": "/Work/Meeting Notes",
-  "file_type": "notebook",
-  "content_type": "text",
-  "content": "Extracted text content...",
-  "page": 1,
-  "total_pages": 5,
-  "total_chars": 2500,
-  "more": true,
-  "modified": "2025-11-28T10:30:00Z",
-  "_hint": "Page 1/5. Next: remarkable_read('Meeting Notes', page=2)."
+  "id": "n000…0001", "name": "Standup", "path": "/Work/Standup", "type": "notebook",
+  "page_count": 2,
+  "pages": [
+    {"page": 1, "text": "Meeting notes\nShip the fixture set", "handwriting": false,
+     "transcript": null, "source_page": null, "inserted": false, "truncated": false},
+    {"page": 2, "text": "", "handwriting": true, "transcript": null,
+     "source_page": null, "inserted": false, "truncated": false}
+  ],
+  "cut_pages": [],
+  "hint": "Pages 1-2 of 2. Page(s) 2 have handwriting with no saved transcript: look at them with remarkable_view(...) ..."
 }
 ```
 
-### Smart Features
+`text` is the page's typed text plus the PDF/EPUB text under it. Output is
+capped by `REMARKABLE_MAX_OUTPUT_CHARS` (default 50000): the page that crosses
+the cap is truncated (`truncated: true`), the pages after it are listed in
+`cut_pages`, and the hint says how to read them.
 
-- **Multi-page read**: Use `pages="all"` to get all pages in one call, or `pages="1-3"` for a range. Pages are separated by `--- Page N ---` markers. Output is capped at ~50K characters.
-- **Grep auto-redirect**: When `grep` finds no match on the current page, it automatically redirects to the first matching page instead of returning an error. The response includes `grep_redirected_from` showing the original page.
-- **Auto-OCR**: If a notebook has no typed text, OCR is automatically enabled (opt out with `auto_ocr=False`). Notified via `_ocr_auto_enabled: true`.
-- **Fuzzy matching**: If the exact document isn't found, similar names are suggested.
-- **Path resolution**: Works with document names or full paths. When two documents share a name, the response lists their full paths (`ambiguous_document`) instead of picking one.
+The 0.7 parameters `document`, `page` and `grep` still work for one release and
+add a `deprecated` note to the result. `content_type="annotations"` now returns
+an error pointing to `remarkable_annotations`.
 
-### What gets returned
-
-- **PDF/EPUB**: The document's own text, followed by your highlights and annotations under an `=== Annotations ===` heading. Use `content_type="annotations"` for just your own marks.
-- **Notebooks**: Typed text (Type Folio or on-screen keyboard), plus handwriting once OCR runs.
-
-### Pagination
-
-`page=N` means the real page N:
-
-- **PDF**: the document's own pages (`page_type: "page"`). A page with no text layer returns empty rather than shifting later pages.
-- **EPUB**: the spine's content documents, roughly chapters (`page_type: "section"`).
-- **Notebooks**: actual notebook pages (`page_type: "notebook"`).
-
-Reading a page of a PDF/EPUB returns the source text only; if the document
-carries highlights or notes, the response sets `has_annotations: true` — fetch
-them with `content_type="annotations"`. Use `pages="all"` or a range to read
-multiple pages in one call. When `more: true`, continue with `page`.
-
----
-
-## remarkable_browse
-
-**Navigate your document library.**
-
-### Parameters
+## remarkable_view
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `path` | string | `"/"` | Folder path to browse |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
+| `id` | string | required | Document id; a path or name also works. |
+| `pages` | string | `1` | `1`, `2-3`, `1,4`. |
+| `size` | `normal` \| `large` | `normal` | `normal` is 60% of the device resolution; `large` is full size (1404x1872 for a notebook page). |
 
-### Examples
+Returns one text block, then one PNG `ImageContent` per page. Each image is the
+whole page: the notebook page, or the PDF/EPUB page with the ink on top. The
+background is opaque paper colour (`REMARKABLE_BACKGROUND_COLOR`, default
+`#FBFBFB`), so ink stays visible in dark-mode clients.
 
-```python
-# List root folder
-remarkable_browse("/")
+At most 4 pages and about 1 MB of image data are returned per call, because
+images count against the client's result budget (Claude Code: 25k tokens). A
+page that does not fit is first rendered smaller; pages that still do not fit
+are named in the text block with the call that fetches them. The text block
+also tells the agent it can transcribe the page and save it with
+`remarkable_save_transcript`.
 
-# Browse a specific folder
-remarkable_browse("/Work/Projects")
-```
-
-To search by document name, use `remarkable_search()` instead.
-
-### Response Format
-
-```json
-{
-  "path": "/Work",
-  "folders": [
-    {"name": "Projects", "path": "/Work/Projects"},
-    {"name": "Archive", "path": "/Work/Archive"}
-  ],
-  "documents": [
-    {
-      "name": "Weekly Report",
-      "path": "/Work/Weekly Report",
-      "file_type": "pdf",
-      "modified": "2025-11-28T10:30:00Z"
-    }
-  ],
-  "_hint": "Found 2 folders, 1 document. To read: remarkable_read('Weekly Report')."
-}
-```
-
-### Smart Features
-
-- **Auto-redirect**: If `path` points to a document instead of a folder, automatically returns the document content (like calling `remarkable_read`)
-- **Case-insensitive**: Paths are case-insensitive
-
----
-
-## remarkable_search
-
-**Search across multiple documents.**
-
-### Parameters
+## remarkable_annotations
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `query` | string | *required* | Search term for document names and indexed content |
-| `grep` | string | `None` | Regex pattern to search within content |
-| `limit` | int | `5` | Maximum documents to return (max: 10) |
-| `include_ocr` | bool | `False` | Enable OCR for handwritten content |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
+| `id` | string | required | Document id; a path or name also works. |
+| `pages` | string | all | Limit to these pages. |
 
-### Examples
+Returns `highlights` (`{page, text}`) from both formats: in-page highlights
+(glyph ranges in the `.rm` file, current firmware) and the older per-page
+`.highlights/<page>.json` files. `ink_pages` lists the pages with handwriting or
+drawings: `{page, source_page, inserted, transcript_saved}`. Highlighter strokes
+and erasers do not count as handwriting.
 
-```python
-# Find documents with "meeting" in the name
-remarkable_search("meeting")
+## remarkable_save_transcript
 
-# Find "action items" inside meeting documents
-remarkable_search("meeting", grep="action items")
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string | Document id; a path or name also works. |
+| `page` | int | Tablet page number. |
+| `text` | string | What the page says, plain text or Markdown. |
 
-# Search journals for a specific topic
-remarkable_search("journal", grep="project idea", include_ocr=True)
-```
-
-### How It Works
-
-- **Without `grep`**: Returns metadata only (name, path, file_type, modified). No cloud downloads — fast.
-- **With `grep`**: Searches document content for the pattern. Uses the local index when available, falls back to cloud download on cache miss.
-- **Full-text search**: PDF and EPUB text is indexed automatically in the background after startup (opt out with `REMARKABLE_INDEX_CONTENT=0`), so content search covers the whole library without anything being read first. Notebooks join the index as they are read (their handwriting needs the client's model for OCR). Punctuation in queries is handled: `agent-based` searches for the phrase rather than erroring.
-- **Scope**: Content matches are checked against the live library, so results never include documents that were deleted or that fall outside `REMARKABLE_ROOT_PATH`.
-- **Limits**: A `limit` above the maximum is reduced, and the reduction is reported in `_warnings` rather than applied silently.
-
-### Response Format
-
-```json
-{
-  "query": "meeting",
-  "grep": "action items",
-  "count": 3,
-  "documents": [
-    {
-      "name": "Team Meeting Nov",
-      "path": "/Work/Team Meeting Nov",
-      "file_type": "notebook",
-      "modified": "2025-11-28T10:30:00Z",
-      "content": "...context around matches...",
-      "total_pages": 2,
-      "grep_matches": 5,
-      "truncated": true
-    }
-  ],
-  "index_coverage": {
-    "indexed": 25,
-    "total": 42
-  },
-  "_hint": "Found 3 document(s) with 12 grep match(es). To read more: remarkable_read('/Work/Team Meeting Nov')."
-}
-```
-
-### Index Coverage
-
-The `index_coverage` field shows how many documents are searchable by content. Reading documents via `remarkable_read` indexes them. When coverage is low, some content matches may be missed.
-
-### Limits
-
-- Maximum 5 documents per search
-- Content is truncated to ~2000 characters per document
-- Designed for quick discovery, use `remarkable_read` for full content
-
----
-
-## remarkable_recent
-
-**Get recently modified documents.**
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | int | `10` | Maximum documents to return (max: 50 without preview, 10 with) |
-| `include_preview` | bool | `False` | Include text preview for each document |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
-
-### Examples
-
-```python
-# Get last 10 documents
-remarkable_recent()
-
-# Get last 5 with previews
-remarkable_recent(limit=5, include_preview=True)
-```
-
-### Response Format
-
-```json
-{
-  "count": 5,
-  "documents": [
-    {
-      "name": "Meeting Notes",
-      "path": "/Work/Meeting Notes",
-      "file_type": "notebook",
-      "modified": "2025-11-28T10:30:00Z",
-      "preview": "First 200 characters of content..."
-    }
-  ],
-  "_hint": "Showing 5 recent documents. To read one: remarkable_read('Meeting Notes')."
-}
-```
-
-### Notes
-
-- With `include_preview=True`, limit is capped at 10 (performance)
-- Previews are served from the local index when available (no cloud download)
-- Notebooks without indexed content show `preview_skipped` instead
-- PDFs and EPUBs fall back to cloud download for previews if not indexed
-
----
+Annotated `readOnlyHint: false`, `destructiveHint: false`. It writes only to
+the local index (`REMARKABLE_INDEX_PATH`); nothing on the tablet or in the
+cloud changes. Saving again replaces the transcript. A blank page (no ink and
+nothing underneath) cannot take one.
 
 ## remarkable_status
 
-**Check connection and authentication status.**
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
-
-### Examples
-
-```python
-remarkable_status()
-```
-
-### Response Format
-
-```json
-{
-  "authenticated": true,
-  "transport": "cloud",
-  "connection": "reMarkable Cloud API",
-  "status": "connected",
-  "document_count": 142,
-  "root_path": "/Work",
-  "ocr_backend": "sampling",
-  "_hint": "Connection healthy. Filtered to root: /Work. Use remarkable_browse('/') to explore your library."
-}
-```
-
-### Fields
-
-| Field | Description |
-|-------|-------------|
-| `authenticated` | Whether authentication succeeded |
-| `transport` | `"cloud"` |
-| `connection` | Connection details |
-| `document_count` | Total documents in library (filtered by root if configured) |
-| `root_path` | Configured root path filter (only present if set) |
-| `ocr_backend` | Which OCR backend is configured |
+No parameters. Returns `authenticated`, `connection` (where the token came
+from), `document_count`, `index` (path, documents, pages, size),
+`index_coverage`, `config` (root path, background colour, cache TTL, output
+cap, read-only, where writes may go) and, when not connected, `error` and a `hint` with the fix. It
+never fails.
 
 ---
 
-## remarkable_image
+## Writing: scope, guard and what never happens
 
-**Get a PNG or SVG image of a specific page.**
+No tool deletes anything, and every write is one root commit: the library
+changes completely or not at all.
 
-### Parameters
+**Write scope**, enforced in code before anything is uploaded:
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `document` | string | *required* | Document name or full path |
-| `page` | int | `1` | Page number (1-indexed) |
-| `background` | string | `"#FBFBFB"` | Background color (hex RGB or RGBA) |
-| `output_format` | string | `"png"` | Output format: `"png"` or `"svg"` |
-| `include_ocr` | bool | `False` | Enable OCR on the image (uses sampling if configured) |
-| `compatibility` | bool | `False` | Return resource URI instead of embedded resource |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
+- `REMARKABLE_READ_ONLY=1` refuses every write (send, organize, including its
+  dry run, and undo).
+- `REMARKABLE_WRITE_ROOT=/Some/Folder` confines writes to that folder (a full
+  library path). Every source and destination of every change must be inside
+  it, or the whole batch is refused. It must lie inside `REMARKABLE_ROOT_PATH`.
+- Unset, the write root is `REMARKABLE_ROOT_PATH`. With neither set, writes may
+  go anywhere, and a location without a leading `/` (or none, for
+  `remarkable_send`) means the folder `/rm-mcp`, created when needed.
 
-### Background Colors
+`remarkable_status` shows the scope under `config.writes`.
 
-- **`"#FBFBFB"`** — Default reMarkable paper color (light cream)
-- **`"#FFFFFF"`** — Pure white
-- **`"#00000000"`** — Fully transparent (RGBA format)
-- **`"#80008080"`** — Semi-transparent purple (RGBA format)
+**Root guard.** Before the root update, the old and new root index are parsed
+and compared: only the new document/folder ids may appear, and only the
+touched ids may change hash. Anything else aborts with nothing committed. The
+commit names the generation it read, so a concurrent change from the tablet is
+retried from a fresh read (three attempts) instead of being overwritten, and a
+change whose document moved on since it was planned is refused.
 
-**Tip:** Set `REMARKABLE_BACKGROUND_COLOR` environment variable to change the default for all image operations.
+## remarkable_send
 
-### Examples
+`remarkable_send(source, folder?, title?)`. `source` is one of:
 
-```python
-# Get first page with default paper background
-remarkable_image("UI Mockup")
+- a local file path: `.pdf`, `.epub` (checked by content), or `.md`/`.markdown`
+  (typeset like Markdown text);
+- an `http(s)` URL to a PDF or EPUB: at most 100 MB, the content type must be a
+  PDF/EPUB (or generic binary) type and the bytes must be one; hosts that
+  resolve to private, loopback or link-local addresses are refused, also after
+  a redirect;
+- Markdown text, typeset into a PDF the shape of the tablet's screen
+  (157 x 210 mm) with headings, lists, code blocks, tables and live links. Raw
+  HTML in the text is shown as text.
 
-# Get specific page
-remarkable_image("Meeting Notes", page=2)
+`folder` is a path (`/A/B` from the top, or `B` under the default write folder);
+missing folders inside the write scope are created in the same commit. `title`
+defaults to the file name or the first heading. The upload is the blob set
+rmapi uses: `<id>.pdf`/`<id>.epub`, `<id>.content` (fileType, pageCount),
+`<id>.metadata`, and the document index. Returns the new `id`, `path`, `type`,
+`page_count`, `size_bytes`, `created_folders` and `previous_root`. There is no
+undo for a send (it would mean deleting); remove the document on the tablet.
 
-# White background
-remarkable_image("Diagram", background="#FFFFFF")
+## remarkable_organize
 
-# Transparent background for compositing
-remarkable_image("Logo Sketch", background="#00000000")
+`remarkable_organize(changes, dry_run=true)`. Each change is one of:
 
-# SVG format for editing in design tools
-remarkable_image("Wireframe", output_format="svg")
+- `{"op": "rename", "item": <id|path|name>, "name": "New name"}`
+- `{"op": "move", "item": <id|path|name>, "to": <folder id|path|name, "/" = top>}`
+- `{"op": "create_folder", "path": "/A/New"}` (the parent must exist) or
+  `"New"` (under the default write folder, created if missing)
 
-# SVG with custom background
-remarkable_image("Sketch", output_format="svg", background="#F0F0F0")
+Changes apply in order, so a batch can create a folder and move things into
+it. An item may be changed once per batch. With `dry_run=true` (the default)
+the result is the exact plan, `changes: [{op, id, kind, before, after}]`, and
+nothing is written. With `dry_run=false` the same plan is applied in one
+commit and the result carries `undo_token` and `previous_root` (the root hash
+replaced, a complete snapshot of the library). Rename and move never touch
+`lastModified`.
 
-# Enable OCR (uses sampling if configured, falls back to other backends)
-remarkable_image("Handwritten Notes", include_ocr=True)
+## remarkable_undo
 
-# Compatibility mode: return resource URI instead of embedded resource
-remarkable_image("Diagram", compatibility=True)
-```
-
-### Response Format
-
-For PNG format, returns an embedded image resource that can be displayed inline.
-
-For SVG format, returns an embedded text resource with the SVG content.
-
-When `compatibility=True`, returns a JSON object with the resource URI:
-
-```json
-{
-  "resource_uri": "remarkableimg:///path/doc.page-1.png",
-  "page": 1,
-  "total_pages": 5,
-  "_hint": "Page 1/5. Use resource URI to access the image."
-}
-```
-
-When `include_ocr=True`, OCR text is included in the response (uses sampling if configured).
-
-### Notes
-
-- Works best with notebooks and handwritten content
-- For PDFs/EPUBs, renders the annotation layer only (not the underlying document)
-- SVG format is useful for further editing in design tools
-- RGBA colors (8-digit hex) allow transparency control
+`remarkable_undo(token)` reverts an applied organize batch: each renamed or
+moved item is pointed back at its earlier version, in one commit, but only if
+none of them changed since; otherwise nothing changes. Folders the batch
+created stay (undo never deletes) and are listed in `left_in_place`. A token
+works once. Tokens live in the local index database.
 
 ---
 
-## Error Handling
+## Deprecated aliases
 
-All tools return structured errors with suggestions:
+Kept for one release. Their titles end in "(deprecated)" and each result says
+which tool replaces it.
 
-```json
-{
-  "_error": {
-    "type": "document_not_found",
-    "message": "Document 'Meting Notes' not found",
-    "suggestion": "Did you mean: 'Meeting Notes', 'Meeting Notes 2'?",
-    "did_you_mean": ["Meeting Notes", "Meeting Notes 2"]
-  }
-}
-```
-
-Common error types:
-- `document_not_found` — Document doesn't exist (includes suggestions)
-- `authentication_failed` — Token invalid or authentication failed
-- `connection_error` — Network or API connection issue
-
----
-
-## Organising tools
-
-Three tools change the library's structure. Nothing else does, and none of them
-deletes anything or alters a document's pages — the worst case is something
-having the wrong name or living in the wrong folder, which the same tools undo.
-
-Set `REMARKABLE_READ_ONLY=1` to disable all three.
-
-### How a change is applied
-
-The library is a Merkle tree: blobs are addressed by the hash of their content,
-a document's index lists its blobs, and the root index lists every document. A
-change rewrites that chain upward and then commits by pointing the root at the
-new index. Everything before that commit is an upload of content nothing
-references yet, so a failure partway through leaves the library untouched.
-
-The commit carries the generation it was based on, so a concurrent edit on the
-tablet is rejected rather than overwritten (and retried automatically). Because
-blobs are immutable, the root hash a change replaced remains a complete snapshot
-of the library — every response includes it as `previous_root`.
-
-Changes respect `REMARKABLE_ROOT_PATH`: items outside the configured root cannot
-be renamed, moved, or used as a destination.
-
----
-
-## remarkable_rename
-
-**Rename a document or folder.**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `item` | string | *required* | Current name or full path |
-| `new_name` | string | *required* | The new name (a name, not a path) |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
-
-```python
-remarkable_rename("Meeting Notes", "Q3 Planning")
-remarkable_rename("/Work/Draft", "Final Report")
-```
-
-A `new_name` containing `/` is refused — use `remarkable_move` to change where
-something lives. If two items share the given name, the response lists their
-full paths instead of guessing.
-
----
-
-## remarkable_move
-
-**Move a document or folder into another folder.**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `item` | string | *required* | Name or full path of the item to move |
-| `destination` | string | *required* | Destination folder path, or `"/"` for the top level |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
-
-```python
-remarkable_move("Q3 Planning", "/Work")
-remarkable_move("/Inbox/Receipt.pdf", "/Financial")
-remarkable_move("Stray Note", "/")
-```
-
-Refused when the destination is not a folder, when the item is already there,
-and when a folder would be moved into itself or one of its own subfolders.
-
----
-
-## remarkable_create_folder
-
-**Create a new empty folder.**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `path` | string | *required* | Full path of the folder, or just a name for the top level |
-| `compact_output` | bool | `False` | Omit hints to reduce token usage |
-
-```python
-remarkable_create_folder("Receipts")
-remarkable_create_folder("/Work/Archive")
-```
-
-The parent folder must already exist — create nested folders one level at a
-time. A folder that already exists in the same place is reported rather than
-duplicated.
+| Old tool | Use instead | Notes |
+|----------|-------------|-------|
+| `remarkable_search(query, ...)` | `remarkable_find(query)` | `grep` and `include_ocr` are ignored. |
+| `remarkable_recent(limit, ...)` | `remarkable_find()` | `include_preview` is ignored. |
+| `remarkable_browse(path)` | `remarkable_list(folder)` | A document path returns its first page, as before. |
+| `remarkable_image(document, page, ...)` | `remarkable_view(id, pages)` | PNG only; `output_format`, `background`, `compatibility` and `include_ocr` are ignored. |
+| `remarkable_rename(item, new_name)` | `remarkable_organize` (`op: rename`) | Applied at once; returns an `undo_token`. |
+| `remarkable_move(item, destination)` | `remarkable_organize` (`op: move`) | Applied at once; returns an `undo_token`. |
+| `remarkable_create_folder(path)` | `remarkable_organize` (`op: create_folder`) | A path without a leading `/` now goes under the default write folder. |

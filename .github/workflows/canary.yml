@@ -1,0 +1,69 @@
+name: Canary
+
+# A daily read-only probe of the real reMarkable Cloud with the owner's token
+# (repository secret REMARKABLE_TOKEN; see docs/development.md). It finds
+# API changes (new headers, sync format, 400s) before users do. It cannot
+# write: REMARKABLE_READ_ONLY=1, and scripts/canary.py refuses every request
+# but GET/HEAD and the token renewal at the transport layer.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Read-only probe
+        env:
+          REMARKABLE_TOKEN: ${{ secrets.REMARKABLE_TOKEN }}
+          REMARKABLE_READ_ONLY: "1"
+        run: |
+          if [ -z "$REMARKABLE_TOKEN" ]; then
+            echo "::warning::REMARKABLE_TOKEN secret is not set; the canary did not probe. See docs/development.md."
+            exit 0
+          fi
+          uv run python scripts/canary.py
+
+  upstream:
+    # What rmapi users report this week: an early sign of cloud API changes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Recent ddvk/rmapi issues about the sync API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          since=$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          gh api -X GET "repos/ddvk/rmapi/issues" -f state=all -f since="$since" -f per_page=50 \
+            --jq '.[] | select((.title + " " + (.body // "")) | test("\\b(400|401|403|header|sync|schema|upload|token|auth)\\b"; "i")) | "#\(.number) [\(.state)] \(.title)\n    \(.html_url)"' \
+            > matches.txt
+          if [ -s matches.txt ]; then
+            echo "::notice::ddvk/rmapi issues updated since $since that mention the sync API:"
+            cat matches.txt
+            { echo "### ddvk/rmapi issues since $since"; echo; sed 's/^/    /' matches.txt; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No matching ddvk/rmapi issues since $since."
+          fi

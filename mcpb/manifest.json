@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "rm-mcp",
+  "display_name": "reMarkable",
+  "version": "2.0.0",
+  "description": "Find, read, view and transcribe your reMarkable notes, and send documents to the tablet.",
+  "long_description": "Connects Claude to your reMarkable library through the reMarkable Cloud (needs a reMarkable account with cloud sync). Read tools find, list, read and view documents, notebooks, PDFs and EPUBs, including highlights; Claude transcribes handwriting by looking at pages and saves the text so it becomes searchable. Write tools send PDFs, EPUBs and Markdown to the tablet and rename, move and create folders in dry-run-first batches with undo. Nothing is ever deleted.",
+  "author": {
+    "name": "Thijs Verreck",
+    "url": "https://github.com/wavyrai"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wavyrai/rm-mcp"
+  },
+  "homepage": "https://github.com/wavyrai/rm-mcp",
+  "documentation": "https://github.com/wavyrai/rm-mcp#readme",
+  "support": "https://github.com/wavyrai/rm-mcp/issues",
+  "license": "MIT",
+  "keywords": ["remarkable", "notes", "handwriting", "pdf", "tablet"],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "src/server.py"],
+      "env": {
+        "REMARKABLE_ONE_TIME_CODE": "${user_config.one_time_code}",
+        "REMARKABLE_ROOT_PATH": "${user_config.root_path}",
+        "REMARKABLE_READ_ONLY": "${user_config.read_only}"
+      }
+    }
+  },
+  "tools": [
+    {"name": "remarkable_find", "description": "Search names, text, highlights and transcripts; filter by folder, type and date."},
+    {"name": "remarkable_list", "description": "List a folder's documents and subfolders."},
+    {"name": "remarkable_read", "description": "Read a document's text per page."},
+    {"name": "remarkable_view", "description": "See pages as images, handwriting included."},
+    {"name": "remarkable_annotations", "description": "Highlights and handwritten marks on PDFs and books."},
+    {"name": "remarkable_save_transcript", "description": "Save the text of a handwritten page so it is searchable."},
+    {"name": "remarkable_status", "description": "Connection, library size, index and settings."},
+    {"name": "remarkable_send", "description": "Put a PDF, EPUB, URL or Markdown on the tablet."},
+    {"name": "remarkable_organize", "description": "Rename, move and create folders as one batch; dry run by default."},
+    {"name": "remarkable_undo", "description": "Revert an applied organize batch."}
+  ],
+  "tools_generated": true,
+  "user_config": {
+    "one_time_code": {
+      "type": "string",
+      "title": "One-time code",
+      "description": "First use only: get a code at https://my.remarkable.com/device/apps/connect and paste it here. rm-mcp exchanges it for a token it keeps in its own file. Leave empty if you already ran `uvx rm-mcp@latest setup`.",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    },
+    "root_path": {
+      "type": "string",
+      "title": "Only this folder",
+      "description": "Optional. Show Claude only this folder of your library, such as /Work.",
+      "required": false,
+      "default": ""
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read only",
+      "description": "Refuse every write (send, organize, undo).",
+      "required": false,
+      "default": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}

@@ -127,8 +127,6 @@ rm-mcp/
 │   │   ├── pdf.py         # PDF text extraction
 │   │   ├── epub.py        # EPUB text extraction
 │   │   └── render.py      # Page rendering (PNG/SVG)
-│   ├── ocr/
-│   │   └── sampling.py    # MCP sampling-based OCR
 │   └── tools/             # MCP tool implementations
 │       ├── _helpers.py    # Shared helpers and re-exports
 │       ├── browse.py
@@ -194,14 +192,12 @@ def remarkable_example(param: str) -> str:
 - `mcp` - Model Context Protocol SDK
 - `requests` - HTTP client for reMarkable Cloud API
 - `rmscene` - Native .rm file parser for text extraction (v3+ format)
-- `rmc` - reMarkable file conversion utilities (for page rendering)
-- `cairosvg` - SVG to PNG conversion (for page rendering)
+- `pymupdf` - draws pages (ink, typed text, PDF/EPUB underneath) to PNG/SVG
 
 ## Environment Variables
 
 - `REMARKABLE_TOKEN` - Authentication token (from `uvx rm-mcp --setup`)
 - `REMARKABLE_ROOT_PATH` - Limit access to a specific folder (default: `/`)
-- `REMARKABLE_OCR_BACKEND` - OCR backend, `sampling` (default)
 - `REMARKABLE_BACKGROUND_COLOR` - Background for rendered images (default: `#FBFBFB`)
 - `REMARKABLE_CACHE_TTL` - Collection cache TTL in seconds (default: `60`)
 - `REMARKABLE_COMPACT` - Set to `1` to omit hints globally

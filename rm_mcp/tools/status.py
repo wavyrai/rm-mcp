@@ -1,103 +1,87 @@
-"""remarkable_status tool — check connection and authentication."""
+"""remarkable_status — connection, library size, index and settings."""
 
+from rm_mcp import reader, write_scope
+from rm_mcp.config import env_bool
 from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
+from rm_mcp.tools.schemas import Coverage, IndexStats, StatusConfig, StatusResult
 
 
-@mcp.tool(annotations=_helpers.STATUS_ANNOTATIONS)
-async def remarkable_status(compact_output: bool = False) -> str:
-    """
-    <usecase>Check connection status and authentication with reMarkable Cloud.</usecase>
-    <instructions>
-    Returns authentication status and diagnostic information.
-    Use this to verify your connection or troubleshoot issues.
-    Includes index statistics when available.
-    </instructions>
-    <examples>
-    - remarkable_status()
-    - remarkable_status(compact_output=True)  # Omit hints
-    </examples>
-    """
-    compact = _helpers.is_compact(compact_output)
-    transport = "cloud"
-    connection_info = "environment variable" if _helpers.REMARKABLE_TOKEN else "file (~/.rmapi)"
+def _config() -> StatusConfig:
+    from rm_mcp.cache import _CACHE_TTL_SECONDS
+    from rm_mcp.extract.render import get_background_color
 
+    return StatusConfig(
+        root_path=_helpers._get_root_path(),
+        background_color=get_background_color(),
+        cache_ttl_seconds=_CACHE_TTL_SECONDS,
+        max_output_chars=reader.max_output_chars(),
+        read_only=env_bool("REMARKABLE_READ_ONLY"),
+        writes=write_scope.describe(),
+    )
+
+
+def status() -> StatusResult:
+    from rm_mcp import api
+    from rm_mcp.index import get_instance
+
+    source = api.current_source()
+    connection = source.describe() if source is not None else "configured client"
     try:
-        client, collection = await _helpers.run_blocking(_helpers.get_cached_collection)
-        items_by_id = _helpers.get_items_by_id(collection)
-
-        root = _helpers._get_root_path()
-
-        # Count documents (not folders or trashed items, filtered by root)
-        doc_count = 0
-        for item in collection:
-            if item.is_folder or _helpers._is_cloud_archived(item):
-                continue
-            item_path = _helpers.get_item_path(item, items_by_id)
-            if _helpers._is_within_root(item_path, root):
-                doc_count += 1
-
-        result = {
-            "authenticated": True,
-            "transport": transport,
-            "connection": connection_info,
-            "status": "connected",
-            "document_count": doc_count,
-        }
-
-        # Add root path info if configured
-        if root != "/":
-            result["root_path"] = root
-
-        # Add configuration details
-        from rm_mcp.cache import _CACHE_TTL_SECONDS
-
-        result["config"] = {
-            "ocr_backend": _helpers.get_ocr_backend(),
-            "root_path": root,
-            "background_color": _helpers.get_background_color(),
-            "cache_ttl_seconds": _CACHE_TTL_SECONDS,
-            "compact_mode": _helpers.is_compact(),
-        }
-
-        # Add index stats if available
-        try:
-            from rm_mcp.index import get_instance
-
-            index = get_instance()
-            if index is not None:
-                stats = index.get_stats()
-                result.update(stats)
-                # Add coverage percentage
-                indexed = stats.get("index_documents", 0)
-                if doc_count > 0:
-                    pct = int(indexed / doc_count * 100)
-                    result["index_coverage"] = f"{indexed}/{doc_count} documents indexed ({pct}%)"
-        except Exception:
-            pass
-
-        hint_parts = [f"Connected successfully via {transport}. Found {doc_count} documents."]
-        if root != "/":
-            hint_parts.append(f"Filtered to root: {root}")
-        if "index_coverage" in result:
-            hint_parts.append(f"Index coverage: {result['index_coverage']}.")
-        hint_parts.append(
-            "Use remarkable_browse() to see your files, "
-            "or remarkable_recent() for recent documents."
+        snap = reader.snapshot()
+    except Exception as e:
+        if source is None:
+            return StatusResult(
+                authenticated=False,
+                connection="not signed in",
+                config=_config(),
+                error="Not signed in: no reMarkable token was found.",
+                hint=(
+                    "Run `uvx rm-mcp@latest setup` in a terminal to connect your reMarkable, "
+                    "then call remarkable_status again."
+                ),
+            )
+        return StatusResult(
+            authenticated=False,
+            connection=connection,
+            config=_config(),
+            error=str(e),
+            hint=_helpers.suggest_for_error(e),
         )
 
-        return _helpers.make_response(result, " ".join(hint_parts), compact=compact)
+    docs = snap.documents()
+    result = StatusResult(
+        authenticated=True,
+        connection=connection,
+        document_count=len(docs),
+        config=_config(),
+        hint=f"Connected; {len(docs)} documents in scope. Start with remarkable_find().",
+    )
+    index = get_instance()
+    if index is not None:
+        stats = index.get_stats()
+        versions = index.indexed_versions()
+        result.index = IndexStats(
+            path=stats["index_path"],
+            documents=stats["index_documents"],
+            pages=stats["index_pages"],
+            size_bytes=stats["index_size"],
+        )
+        result.index_coverage = Coverage(
+            indexed=sum(1 for e in docs if e.hash and versions.get(e.id) == e.hash),
+            total=len(docs),
+        )
+    return result
 
-    except Exception as e:
-        error_msg = str(e)
 
-        result = {
-            "authenticated": False,
-            "transport": transport,
-            "connection": connection_info,
-            "error": error_msg,
-        }
+@mcp.tool(
+    title="Check reMarkable Connection",
+    annotations=_helpers.read_only("Check reMarkable Connection"),
+)
+async def remarkable_status() -> StatusResult:
+    """Check the reMarkable Cloud connection, library size, search index and settings.
 
-        hint = "To authenticate: run 'uvx rm-mcp --setup' and follow the instructions."
-
-        return _helpers.make_response(result, hint, compact=compact)
+    Never fails: when not connected it returns authenticated=false with the
+    error and how to fix it.
+    """
+    return await _helpers.run_blocking(status)

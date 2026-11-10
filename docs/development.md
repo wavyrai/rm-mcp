@@ -19,7 +19,7 @@ cd rm-mcp
 uv sync --all-extras
 
 # Verify setup
-uv run pytest test_server.py -v
+uv run pytest tests/test_server.py -v
 ```
 
 ## Project Structure
@@ -29,34 +29,39 @@ rm-mcp/
 ├── server.py              # Entry point (backwards compatible)
 ├── rm_mcp/                # Main package
 │   ├── __init__.py
-│   ├── server.py          # FastMCP server initialization
-│   ├── cli.py             # CLI (--setup, --register, server mode)
+│   ├── server.py          # MCPServer subclass & initialization
+│   ├── cli.py             # CLI: setup, doctor, logout, server mode
+│   ├── auth.py            # Token file location and precedence
+│   ├── client_config.py   # Claude Code / Claude Desktop configuration
 │   ├── api.py             # reMarkable Cloud API helpers
 │   ├── models.py          # Document/Folder dataclasses
 │   ├── paths.py           # Path utilities & root path filtering
 │   ├── index.py           # SQLite FTS5 full-text search index
-│   ├── cache.py           # Multi-layer caching
-│   ├── responses.py       # Response formatting
-│   ├── resources.py       # MCP resources
+│   ├── cache.py           # Collection cache, hash-keyed page transcripts
+│   ├── library.py         # Stable-ID view of the collection
+│   ├── reader.py          # Read side: resolve ids, pages, find/list/read/view logic
+│   ├── loader.py          # Startup: load the library, index page text in the background
+│   ├── responses.py       # JSON responses of the organising tools
+│   ├── resources.py       # Resource templates remarkable://doc/{id}[/page/{n}.png]
 │   ├── prompts.py         # MCP prompts
-│   ├── capabilities.py    # Client capability detection
-│   ├── tools/             # Tool implementations
-│   │   ├── read.py        # remarkable_read
-│   │   ├── browse.py      # remarkable_browse
-│   │   ├── search.py      # remarkable_search
-│   │   ├── recent.py      # remarkable_recent
-│   │   ├── image.py       # remarkable_image
-│   │   └── status.py      # remarkable_status
+│   ├── tools/             # Tool registration (one file per tool)
+│   │   ├── find.py, listing.py, read.py, view.py, annotations.py
+│   │   ├── transcript.py  # remarkable_save_transcript (local index only)
+│   │   ├── status.py, organize.py
+│   │   ├── schemas.py     # Structured output models (outputSchema)
+│   │   └── deprecated.py  # 0.7 tool names as thin aliases
 │   ├── extract/           # Content extraction
-│   │   ├── notebook.py    # .rm file parsing
-│   │   ├── pdf.py         # PDF text extraction
-│   │   ├── epub.py        # EPUB text extraction
+│   │   ├── pages.py       # .content page plan: tablet page → .rm + source page
+│   │   ├── document.py    # Per-page text, highlights, ink, content hash
+│   │   ├── notebook.py    # Typed text of one .rm page, page hashes
 │   │   └── render.py      # Page rendering (PNG/SVG)
-│   ├── ocr/               # OCR backends
-│   │   └── sampling.py    # MCP sampling-based OCR
 │   └── clients/
 │       └── cloud.py       # reMarkable Cloud API v3/v4 client
-├── test_server.py         # Test suite
+├── tests/                 # Test suite + fixtures/
+├── scripts/canary.py      # Daily read-only probe of the real cloud
+├── plugin/                # Claude Code plugin (MCP server + skills)
+├── .claude-plugin/        # marketplace.json for /plugin marketplace add
+├── mcpb/                  # Claude Desktop bundle (manifest, build.sh)
 ├── setup.sh               # One-line installer
 ├── server.json            # MCP Registry definition
 ├── pyproject.toml         # Project config and dependencies
@@ -68,13 +73,13 @@ rm-mcp/
 
 ```bash
 # Run all tests
-uv run pytest test_server.py -v
+uv run pytest tests/test_server.py -v
 
 # Run specific test class
-uv run pytest test_server.py -v -k "TestClassName"
+uv run pytest tests/test_server.py -v -k "TestClassName"
 
 # Run with coverage
-uv run pytest test_server.py -v --cov=rm_mcp
+uv run pytest tests/test_server.py -v --cov=rm_mcp
 ```
 
 Tests use `pytest-asyncio` for async testing. All async tests use the `@pytest.mark.asyncio` decorator.
@@ -104,7 +109,7 @@ uv run ruff format .
 git checkout -b feature/my-feature
 
 # After making changes — add specific files, never use git add -A
-git add rm_mcp/tools/read.py test_server.py
+git add rm_mcp/tools/read.py tests/test_server.py
 git commit -m "feat: description of change"
 git push origin feature/my-feature
 # Then create PR via GitHub
@@ -117,10 +122,10 @@ git push origin feature/my-feature
 1. Create a new file in `rm_mcp/tools/` (e.g. `rm_mcp/tools/my_tool.py`)
 2. Register it in `rm_mcp/tools/__init__.py`
 3. Create unique `ToolAnnotations` with a descriptive title
-4. Add tests in `test_server.py`
+4. Add tests in `tests/test_server.py`
 5. Update the tools table in README.md
 6. Update `docs/tools.md` with detailed documentation
-7. Run tests: `uv run pytest test_server.py -v`
+7. Run tests: `uv run pytest tests/test_server.py -v`
 
 ### Tool Design Principles
 
@@ -163,7 +168,7 @@ Releases are automated via GitHub Actions. The version is derived from the git t
 1. Ensure all changes are merged to `main`
 2. Ensure README.md and docs are current
 3. Ensure CI is passing on `main`
-4. Update version in `pyproject.toml` and `server.json`
+4. Update the version in `pyproject.toml`, `server.json`, `plugin/.claude-plugin/plugin.json` and `mcpb/manifest.json` (CI checks they agree), and add a CHANGELOG.md section
 5. Commit, tag, and push:
 
 ```bash
@@ -178,23 +183,39 @@ The workflow automatically:
 - Publishes to PyPI (trusted publishing via OIDC)
 - Publishes to MCP Registry (GitHub OIDC authentication)
 
+## Daily canary
+
+`.github/workflows/canary.yml` runs `scripts/canary.py` every day (and on demand from the Actions tab) against the real reMarkable Cloud. It calls `remarkable_status`, `remarkable_find`, reads one page, views one page, and checks that the root index hashes to the root hash, parses and re-serialises byte for byte (the property every write depends on), for the root and a sample of document indexes. A second job lists `ddvk/rmapi` issues from the past week that mention 400s, headers, sync, uploads or tokens.
+
+The probe is read-only twice over: it sets `REMARKABLE_READ_ONLY=1`, and it wraps `requests`' transport so any request other than GET/HEAD or the token-renewal POST raises before it leaves the process; a refused request fails the run. Its output has counts and HTTP status codes only, never document names, ids or text, because Actions logs on a public repository are public.
+
+**Secret:** add a repository secret `REMARKABLE_TOKEN` (Settings → Secrets and variables → Actions). Use a token from a separate registration, so it can be revoked on its own at my.remarkable.com:
+
+```bash
+HOME=$(mktemp -d) uvx rm-mcp@latest setup --no-clients
+# then copy the token file the command names (token.json) into the secret's value
+```
+
+Until the secret exists, the probe step passes with a warning. To debug a failure privately, run it locally with `CANARY_VERBOSE=1 REMARKABLE_TOKEN=... uv run python scripts/canary.py`.
+
+## Distribution
+
+- **Claude Code plugin**: `plugin/` (manifest, `.mcp.json` running `uvx rm-mcp@latest`, skills) listed by `.claude-plugin/marketplace.json`. Check with `claude plugin validate ./plugin` and `claude plugin validate .`. Bump `plugin/.claude-plugin/plugin.json`'s `version` with each release, or users keep the old skills.
+- **Claude Desktop bundle**: `mcpb/` is a manifest 0.4 bundle of the `uv` server type: Claude Desktop installs `rm-mcp` from PyPI with its own uv. `mcpb/build.sh` validates and packs it (needs Node for `npx @anthropic-ai/mcpb`). Its `version` must match `pyproject.toml`.
+
 ## Key Dependencies
 
 | Package | Purpose |
 |---------|---------|
 | `mcp` | Model Context Protocol SDK |
 | `requests` | HTTP client for reMarkable Cloud API |
-| `rmscene` | Native .rm file parser for text extraction |
-| `pymupdf` | PDF text extraction |
-| `ebooklib` | EPUB text extraction |
-| `cairosvg` | SVG to PNG rendering |
-| `Pillow` | Image processing |
-| `beautifulsoup4` | HTML/XML parsing for EPUBs |
-| `rmc` | reMarkable rendering tools |
+| `rmscene` | Native .rm file parser (text extraction, rendering) |
+| `pymupdf` | PDF text extraction; draws pages to PNG/SVG |
+| `Pillow` | Tests only: compares rendered pages with goldens |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `REMARKABLE_TOKEN` | Cloud API authentication token |
-| `REMARKABLE_OCR_BACKEND` | OCR backend: `sampling` (default, uses client LLM) |
+| `REMARKABLE_TOKEN` | Token; used only when rm-mcp's token file (written by `rm-mcp setup`) is absent |
+| `REMARKABLE_ONE_TIME_CODE` | A one-time code the server redeems when no token exists (Claude Desktop bundle) |

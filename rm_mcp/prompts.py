@@ -1,134 +1,57 @@
-"""
-MCP Prompts for reMarkable tablet workflows.
-
-Pre-built prompts to help users get started with common tasks.
-"""
+"""MCP prompts: three workflows that use the tools together."""
 
 from rm_mcp.server import mcp
 
 
 @mcp.prompt(
-    name="summarize_recent",
-    title="Summarize Recent Notes",
-    description="Get an AI summary of your recent reMarkable notes",
+    name="transcribe_notebook",
+    title="Transcribe a Notebook to Markdown",
+    description="Turn a notebook, handwriting included, into Markdown, saving each page's text.",
 )
-def summarize_recent_prompt() -> list:
-    """Prompt to summarize recent documents."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                "Please check my recent reMarkable documents using remarkable_recent() "
-                "and provide a summary of what I've been working on. "
-                "For any documents that look interesting, read their content "
-                "with remarkable_read() and give me key highlights."
-            ),
-        }
-    ]
+def transcribe_notebook(document: str) -> str:
+    return (
+        f"Transcribe my reMarkable document '{document}' to Markdown.\n\n"
+        f"1. Find it with remarkable_find(query='{document}') and take its id.\n"
+        "2. remarkable_read(id, pages='all') gives the typed and PDF text per page, and "
+        "marks pages with handwriting.\n"
+        "3. For each handwritten page without a transcript, look at it with "
+        "remarkable_view(id, pages=...) (up to 4 pages per call), transcribe it exactly, "
+        "and save it with remarkable_save_transcript(id, page, text).\n"
+        "4. Put the pages together as one Markdown document with a heading per page. "
+        "Describe drawings in a short italic line; mark words you cannot read as [?]."
+    )
 
 
 @mcp.prompt(
-    name="find_notes",
-    title="Find Notes About a Topic",
-    description="Search your reMarkable tablet for notes on a specific topic",
+    name="weekly_review",
+    title="Weekly Review of Recent Notes",
+    description="Summarise what changed on the tablet this week, with action items.",
 )
-def find_notes_prompt(topic: str) -> list:
-    """Prompt to find notes about a topic."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                f"Search my reMarkable tablet for any notes about '{topic}'. "
-                f"Use remarkable_search('{topic}') to find relevant documents, "
-                "then use remarkable_read() to extract and summarize the content. "
-                "Please organize the information you find."
-            ),
-        }
-    ]
+def weekly_review(since: str = "") -> str:
+    when = f"modified_after='{since}'" if since else "modified_after set to 7 days ago"
+    return (
+        "Review my reMarkable notes from the past week.\n\n"
+        f"1. remarkable_find({when}) lists what I worked on.\n"
+        "2. Read each with remarkable_read(id). For handwritten pages without a transcript, "
+        "look with remarkable_view and save what you read with remarkable_save_transcript.\n"
+        "3. Summarise by theme, then list action items and open questions, each with the "
+        "document name and page."
+    )
 
 
 @mcp.prompt(
-    name="daily_review",
-    title="Daily Notes Review",
-    description="Review what you worked on today in your reMarkable tablet",
+    name="find_topic",
+    title="Find Everything About a Topic",
+    description="Gather every note, highlight and page about one topic.",
 )
-def daily_review_prompt() -> list:
-    """Prompt for daily review of notes."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                "Please do a daily review of my reMarkable notes:\n\n"
-                "1. Use remarkable_recent(limit=5, include_preview=True) to see "
-                "what I worked on recently\n"
-                "2. For documents modified today, read the full content\n"
-                "3. Summarize the key points and any action items\n"
-                "4. Suggest any follow-up tasks based on my notes"
-            ),
-        }
-    ]
-
-
-@mcp.prompt(
-    name="export_document",
-    title="Export Document Content",
-    description="Extract and format content from a specific document",
-)
-def export_document_prompt(document_name: str) -> list:
-    """Prompt to export a specific document."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                f"Please extract all the content from my reMarkable document "
-                f"'{document_name}' using remarkable_read('{document_name}'). "
-                "Then format it nicely as markdown, preserving the structure "
-                "and any important formatting."
-            ),
-        }
-    ]
-
-
-@mcp.prompt(
-    name="organize_library",
-    title="Organize My Library",
-    description="Get suggestions for organizing your reMarkable library",
-)
-def organize_library_prompt() -> list:
-    """Prompt for library organization suggestions."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                "Please help me organize my reMarkable library:\n\n"
-                "1. Use remarkable_browse('/') to see my current folder structure\n"
-                "2. Use remarkable_recent(limit=20) to see my active documents\n"
-                "3. Identify any documents that might be misplaced or could be "
-                "better organized\n"
-                "4. Suggest a folder structure that would help me stay organized\n\n"
-                "Note: This server is read-only, so just provide recommendations - "
-                "I'll reorganize manually on my tablet."
-            ),
-        }
-    ]
-
-
-@mcp.prompt(
-    name="meeting_notes",
-    title="Extract Meeting Notes",
-    description="Find and extract meeting notes from your reMarkable",
-)
-def meeting_notes_prompt(meeting_keyword: str = "meeting") -> list:
-    """Prompt to find and extract meeting notes."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                f"Find all my meeting notes on my reMarkable tablet:\n\n"
-                f"1. Search for documents with remarkable_search('{meeting_keyword}')\n"
-                "2. Read the content of each meeting notes document\n"
-                "3. Extract key decisions, action items, and attendees mentioned\n"
-                "4. Create a consolidated summary of all meetings"
-            ),
-        }
-    ]
+def find_topic(topic: str) -> str:
+    return (
+        f"Find everything on my reMarkable tablet about '{topic}'.\n\n"
+        f"1. remarkable_find(query='{topic}') searches names, text, highlights and saved "
+        "transcripts; try a synonym or two as well.\n"
+        "2. Read the matching pages with remarkable_read(id, pages=...) and check "
+        "remarkable_annotations(id) for highlights.\n"
+        "3. Handwriting is only searchable once transcribed: for likely notebooks, view the "
+        "pages and save transcripts as you go.\n"
+        "4. Report what you found, grouped by document, citing pages."
+    )

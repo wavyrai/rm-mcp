@@ -1,0 +1,14 @@
+{
+  "name": "remarkable",
+  "displayName": "reMarkable",
+  "version": "2.0.0",
+  "description": "Find, read, view and transcribe your reMarkable notes, send PDFs and Markdown to the tablet, and organise the library with dry runs and undo.",
+  "author": {
+    "name": "Thijs Verreck",
+    "url": "https://github.com/wavyrai"
+  },
+  "homepage": "https://github.com/wavyrai/rm-mcp",
+  "repository": "https://github.com/wavyrai/rm-mcp",
+  "license": "MIT",
+  "keywords": ["remarkable", "notes", "handwriting", "obsidian", "mcp"]
+}

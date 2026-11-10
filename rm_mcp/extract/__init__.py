@@ -1,44 +1,24 @@
 """
-Text extraction helpers for reMarkable documents.
-
-Provides PDF, EPUB, notebook (.rm) extraction, and rendering.
+Content extraction for reMarkable documents: page plans, per-page text and rendering.
 """
 
-# Re-export cache functions for backward compatibility
-from rm_mcp.cache import (  # noqa: F401
-    _MAX_EXTRACTION_CACHE_SIZE,
-    _extraction_cache,
-    _is_cache_valid,
-    cache_ocr_result,
-    cache_page_ocr,
-    clear_extraction_cache,
-    get_cached_ocr_result,
-    get_cached_page_ocr,
-)
-from rm_mcp.extract.epub import extract_text_from_epub  # noqa: F401
-from rm_mcp.extract.notebook import (  # noqa: F401
-    _get_ordered_rm_files,
-    _safe_extractall,
-    extract_text_from_document_zip,
+# rmscene's "newer format" notices go to DEBUG (see rmscene_logs).
+from rm_mcp.extract.rmscene_logs import quiet_rmscene
+
+quiet_rmscene()
+
+from rm_mcp.extract.document import DocumentPages, Page, read_document_pages  # noqa: E402, F401
+from rm_mcp.extract.notebook import (  # noqa: E402, F401
     extract_text_from_rm_file,
     get_document_page_count,
+    get_page_hashes,
 )
-from rm_mcp.extract.pdf import extract_text_from_pdf  # noqa: F401
-from rm_mcp.extract.render import (  # noqa: F401
-    _DEFAULT_BACKGROUND_COLOR,
-    CONTENT_MARGIN,
-    REMARKABLE_BACKGROUND_COLOR,
+from rm_mcp.extract.render import (  # noqa: E402, F401
     REMARKABLE_HEIGHT,
     REMARKABLE_WIDTH,
-    _add_svg_background,
-    _get_svg_content_bounds,
-    _parse_hex_color,
     get_background_color,
     render_page_from_document_zip,
     render_page_from_document_zip_svg,
     render_rm_file_to_png,
     render_rm_file_to_svg,
 )
-
-# Re-export find_similar_documents for backward compatibility
-from rm_mcp.paths import find_similar_documents  # noqa: F401
