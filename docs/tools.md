@@ -11,9 +11,9 @@
 | [`remarkable_annotations`](#remarkable_annotations) | Highlights and pages with handwriting | no |
 | [`remarkable_save_transcript`](#remarkable_save_transcript) | Keep a transcript of a handwritten page | local index only |
 | [`remarkable_status`](#remarkable_status) | Connection, index and settings | no |
-| [`remarkable_rename`](#remarkable_rename) | Rename a document or folder | library structure |
-| [`remarkable_move`](#remarkable_move) | Move an item into another folder | library structure |
-| [`remarkable_create_folder`](#remarkable_create_folder) | Create a folder | library structure |
+| [`remarkable_send`](#remarkable_send) | Put a PDF, EPUB, URL or Markdown on the tablet | adds a document |
+| [`remarkable_organize`](#remarkable_organize) | Rename, move, create folders as one batch (dry run first) | library structure |
+| [`remarkable_undo`](#remarkable_undo) | Revert an organize batch | library structure |
 
 Every tool except `remarkable_view` returns structured content and publishes an
 `outputSchema`. Failures are MCP tool errors whose message names the cause and
@@ -192,29 +192,82 @@ nothing underneath) cannot take one.
 No parameters. Returns `authenticated`, `connection` (where the token came
 from), `document_count`, `index` (path, documents, pages, size),
 `index_coverage`, `config` (root path, background colour, cache TTL, output
-cap, read-only) and, when not connected, `error` and a `hint` with the fix. It
+cap, read-only, where writes may go) and, when not connected, `error` and a `hint` with the fix. It
 never fails.
 
 ---
 
-## remarkable_rename
+## Writing: scope, guard and what never happens
 
-Rename a document or folder. `item` is a name or path; `new_name` is a plain
-name. Never touches `lastModified`. Disabled by `REMARKABLE_READ_ONLY=1`.
+No tool deletes anything, and every write is one root commit: the library
+changes completely or not at all.
 
-## remarkable_move
+**Write scope**, enforced in code before anything is uploaded:
 
-Move `item` into `destination` (a folder path, or `/` for the top level).
-Refuses to move a folder into itself. Disabled by `REMARKABLE_READ_ONLY=1`.
+- `REMARKABLE_READ_ONLY=1` refuses every write (send, organize, including its
+  dry run, and undo).
+- `REMARKABLE_WRITE_ROOT=/Some/Folder` confines writes to that folder (a full
+  library path). Every source and destination of every change must be inside
+  it, or the whole batch is refused. It must lie inside `REMARKABLE_ROOT_PATH`.
+- Unset, the write root is `REMARKABLE_ROOT_PATH`. With neither set, writes may
+  go anywhere, and a location without a leading `/` (or none, for
+  `remarkable_send`) means the folder `/rm-mcp`, created when needed.
 
-## remarkable_create_folder
+`remarkable_status` shows the scope under `config.writes`.
 
-Create a folder at `path`; parent folders must exist. Disabled by
-`REMARKABLE_READ_ONLY=1`.
+**Root guard.** Before the root update, the old and new root index are parsed
+and compared: only the new document/folder ids may appear, and only the
+touched ids may change hash. Anything else aborts with nothing committed. The
+commit names the generation it read, so a concurrent change from the tablet is
+retried from a fresh read (three attempts) instead of being overwritten, and a
+change whose document moved on since it was planned is refused.
 
-The organising tools never delete anything and never change a document's
-pages. Each commits a single root update and returns the previous root hash.
-They still take names and paths; step 3 of v2 moves them to ids.
+## remarkable_send
+
+`remarkable_send(source, folder?, title?)`. `source` is one of:
+
+- a local file path: `.pdf`, `.epub` (checked by content), or `.md`/`.markdown`
+  (typeset like Markdown text);
+- an `http(s)` URL to a PDF or EPUB: at most 100 MB, the content type must be a
+  PDF/EPUB (or generic binary) type and the bytes must be one; hosts that
+  resolve to private, loopback or link-local addresses are refused, also after
+  a redirect;
+- Markdown text, typeset into a PDF the shape of the tablet's screen
+  (157 x 210 mm) with headings, lists, code blocks, tables and live links. Raw
+  HTML in the text is shown as text.
+
+`folder` is a path (`/A/B` from the top, or `B` under the default write folder);
+missing folders inside the write scope are created in the same commit. `title`
+defaults to the file name or the first heading. The upload is the blob set
+rmapi uses: `<id>.pdf`/`<id>.epub`, `<id>.content` (fileType, pageCount),
+`<id>.metadata`, and the document index. Returns the new `id`, `path`, `type`,
+`page_count`, `size_bytes`, `created_folders` and `previous_root`. There is no
+undo for a send (it would mean deleting); remove the document on the tablet.
+
+## remarkable_organize
+
+`remarkable_organize(changes, dry_run=true)`. Each change is one of:
+
+- `{"op": "rename", "item": <id|path|name>, "name": "New name"}`
+- `{"op": "move", "item": <id|path|name>, "to": <folder id|path|name, "/" = top>}`
+- `{"op": "create_folder", "path": "/A/New"}` (the parent must exist) or
+  `"New"` (under the default write folder, created if missing)
+
+Changes apply in order, so a batch can create a folder and move things into
+it. An item may be changed once per batch. With `dry_run=true` (the default)
+the result is the exact plan, `changes: [{op, id, kind, before, after}]`, and
+nothing is written. With `dry_run=false` the same plan is applied in one
+commit and the result carries `undo_token` and `previous_root` (the root hash
+replaced, a complete snapshot of the library). Rename and move never touch
+`lastModified`.
+
+## remarkable_undo
+
+`remarkable_undo(token)` reverts an applied organize batch: each renamed or
+moved item is pointed back at its earlier version, in one commit, but only if
+none of them changed since; otherwise nothing changes. Folders the batch
+created stay (undo never deletes) and are listed in `left_in_place`. A token
+works once. Tokens live in the local index database.
 
 ---
 
@@ -229,3 +282,6 @@ which tool replaces it.
 | `remarkable_recent(limit, ...)` | `remarkable_find()` | `include_preview` is ignored. |
 | `remarkable_browse(path)` | `remarkable_list(folder)` | A document path returns its first page, as before. |
 | `remarkable_image(document, page, ...)` | `remarkable_view(id, pages)` | PNG only; `output_format`, `background`, `compatibility` and `include_ocr` are ignored. |
+| `remarkable_rename(item, new_name)` | `remarkable_organize` (`op: rename`) | Applied at once; returns an `undo_token`. |
+| `remarkable_move(item, destination)` | `remarkable_organize` (`op: move`) | Applied at once; returns an `undo_token`. |
+| `remarkable_create_folder(path)` | `remarkable_organize` (`op: create_folder`) | A path without a leading `/` now goes under the default write folder. |

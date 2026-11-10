@@ -101,15 +101,22 @@ AI assistants use the tools to read documents, search content, and more:
 | `remarkable_annotations` | Highlights and the pages that carry handwriting |
 | `remarkable_save_transcript` | Store the assistant's transcript of a handwritten page (local index only) |
 | `remarkable_status` | Connection, index and settings |
-| `remarkable_rename` / `remarkable_move` / `remarkable_create_folder` | Organise the library (never deletes) |
+| `remarkable_send` | Put a PDF/EPUB file or URL, or Markdown (typeset to PDF), on the tablet |
+| `remarkable_organize` | Rename, move and create folders as one batch; dry run by default, undoable |
+| `remarkable_undo` | Revert an organize batch if nothing it touched changed since |
 
 Documents are addressed by a stable **id**: every result carries it, and paths
 or names are accepted wherever an id is. Page numbers are tablet pages, so a
 page inserted into a PDF counts. Every tool except `remarkable_view` returns
 structured output with an `outputSchema`.
 
-`remarkable_search`, `remarkable_browse`, `remarkable_recent` and
-`remarkable_image` still answer for one release as deprecated aliases.
+No tool deletes anything. Writes stay inside `REMARKABLE_WRITE_ROOT` (default:
+`REMARKABLE_ROOT_PATH`; with neither set, new things go to `/rm-mcp` unless a
+full path is given), and `REMARKABLE_READ_ONLY=1` turns every write off.
+
+`remarkable_search`, `remarkable_browse`, `remarkable_recent`,
+`remarkable_image`, `remarkable_rename`, `remarkable_move` and
+`remarkable_create_folder` still answer for one release as deprecated aliases.
 
 📖 **[Full Tools Documentation](docs/tools.md)**
 
@@ -232,10 +239,11 @@ Default is `#FBFBFB` (reMarkable paper color), opaque so ink stays visible in da
 |----------|---------|-------------|
 | `REMARKABLE_TOKEN` | *(required)* | Auth token from `uvx rm-mcp --setup` |
 | `REMARKABLE_ROOT_PATH` | `/` | Limit access to a specific folder |
-| `REMARKABLE_READ_ONLY` | *(off)* | Set to `1` to disable renaming, moving and creating folders |
+| `REMARKABLE_READ_ONLY` | *(off)* | Set to `1` to disable every write (send, organize, undo) |
+| `REMARKABLE_WRITE_ROOT` | `REMARKABLE_ROOT_PATH` | Folder (full path) all writes must stay inside, e.g. `/rm-mcp` |
 | `REMARKABLE_BACKGROUND_COLOR` | `#FBFBFB` | Background color for rendered images (`#RRGGBB` or `#RRGGBBAA`) |
 | `REMARKABLE_CACHE_TTL` | `60` | Collection cache TTL in seconds |
-| `REMARKABLE_COMPACT` | *(off)* | Set to `1` or `true` to omit hints from the organising tools' responses |
+| `REMARKABLE_COMPACT` | *(off)* | Set to `1` or `true` to omit hints from the deprecated organising tools' responses |
 | `REMARKABLE_MAX_OUTPUT_CHARS` | `50000` | Maximum characters of page text per `remarkable_read` call |
 | `REMARKABLE_PARALLEL_WORKERS` | `5` | Parallel workers for metadata fetching |
 | `REMARKABLE_INDEX_CONTENT` | `1` | Set to `0` to disable background indexing of page text |

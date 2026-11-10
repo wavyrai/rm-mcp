@@ -2,7 +2,7 @@
 
 ## Project overview
 
-rm-mcp is an MCP (Model Context Protocol) server that gives AI assistants read-only access to a reMarkable tablet's library via the reMarkable Cloud API. It supports notebooks, PDFs, EPUBs, full-text search, and handwriting via transcripts the agent saves after viewing a page.
+rm-mcp is an MCP (Model Context Protocol) server that gives AI assistants access to a reMarkable tablet's library (read, plus scoped writes that never delete) via the reMarkable Cloud API. It supports notebooks, PDFs, EPUBs, full-text search, and handwriting via transcripts the agent saves after viewing a page.
 
 - **Package name:** `rm-mcp` (PyPI), `io.github.wavyrai/rm-mcp` (MCP Registry)
 - **Python:** >=3.10, built with Hatchling
@@ -32,14 +32,21 @@ rm_mcp/                   # Main package
     transcript.py         # remarkable_save_transcript (writes the local index only)
     schemas.py            # Pydantic output models → outputSchema
     deprecated.py         # 0.7 names (search, browse, recent, image) as thin aliases
-    organize.py           # rename / move / create folder (the only library writes)
+    write.py              # remarkable_send / remarkable_organize / remarkable_undo
+    organize.py           # deprecated rename / move / create_folder (one-change batches)
+  write_scope.py          # REMARKABLE_READ_ONLY / REMARKABLE_WRITE_ROOT, checked per path
+  organizer.py            # Plans a batch against a snapshot; every path checked against the scope
+  writes.py               # send / organize / undo: scope → source → sync → plan → commit → undo log
+  sources.py              # send sources: local file, URL (capped, public hosts), Markdown
   clients/
-    organize.py           # Merkle-tree mutation + root commit
+    organize.py           # Merkle-tree mutation, root guard, root commit
   extract/                # Content extraction
     pages.py              # .content page plan: tablet page → .rm + source PDF/EPUB page
     document.py           # Per tablet page: typed text, source text, highlights, ink, hash
     notebook.py           # Typed text of one .rm page, page hashes, page count
     render.py             # rmscene + pymupdf page renderer (PNG/SVG, no system libs)
+    typeset.py            # Markdown → tablet-sized PDF (markdown-it-py + pymupdf Story)
+    rmscene_logs.py       # rmscene "newer format" notices → DEBUG
   clients/
     cloud.py              # reMarkable Cloud API v3/v4 client
 tests/test_tools.py       # The v2 tools end to end on the fake cloud (fixtures, real client)
@@ -48,6 +55,7 @@ tests/test_integration.py # Integration tests — fake library, real index/ZIP/P
 tests/test_fixtures.py    # Extraction against tests/fixtures (make_fixtures.py)
 tests/test_sync.py        # Incremental sync, blob store, hash-keyed caches (fake cloud)
 tests/test_render.py      # Renderer goldens (tests/fixtures/goldens, --update-goldens)
+tests/test_writes.py      # send / organize / undo, scope, root guard on the fake cloud
 setup.sh                  # One-line installer script
 server.json               # MCP Registry server definition
 server.py                 # Root-level backwards-compatible entry point
@@ -136,11 +144,13 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 |----------|----------|-------------|
 | `REMARKABLE_TOKEN` | Yes | Cloud API auth token |
 | `REMARKABLE_ROOT_PATH` | No | Restrict to a folder (e.g. `/Work`) |
+| `REMARKABLE_READ_ONLY` | No | Set `1` to refuse every write |
+| `REMARKABLE_WRITE_ROOT` | No | Folder (full path) every write must stay inside; default `REMARKABLE_ROOT_PATH` |
 | `REMARKABLE_BACKGROUND_COLOR` | No | Image background, default opaque `#FBFBFB` (read per call) |
 | `REMARKABLE_CACHE_TTL` | No | Collection cache TTL in seconds, default `60` |
 | `REMARKABLE_INDEX_CONTENT` | No | Set `0` to disable background page-text indexing |
 | `REMARKABLE_INDEX_PATH` | No | FTS index location, default `~/.cache/rm-mcp/index.db` |
-| `REMARKABLE_COMPACT` | No | Set `1` or `true` to omit hints from the organising tools |
+| `REMARKABLE_COMPACT` | No | Set `1` or `true` to omit hints from the deprecated organising tools |
 | `REMARKABLE_MAX_OUTPUT_CHARS` | No | Page text per `remarkable_read` call, default `50000` |
 | `REMARKABLE_PARALLEL_WORKERS` | No | Parallel metadata fetch workers, default `5` |
 | `REMARKABLE_BLOB_CACHE_MB` | No | Blob store size cap in MB, default `500`; `0` disables it |
@@ -151,7 +161,7 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 - Line length: 100 (ruff)
 - Ruff rules: E, F, W, I
 - Async: all tool handlers are async, pytest uses `asyncio_mode = "auto"`
-- Reading tools are read-only and idempotent; `tools/organize.py` writes the library and `remarkable_save_transcript` writes only the local index
+- Reading tools are read-only and idempotent; `tools/write.py` (and its deprecated aliases in `tools/organize.py`) writes the library and `remarkable_save_transcript` writes only the local index
 
 ## Architecture rules
 
@@ -174,16 +184,21 @@ These are invariants, not preferences — each one exists because breaking it ca
 
 ## Writing to the library
 
-`clients/organize.py` is the only code that mutates anything. The rules it relies on, all verified against the live API:
+`clients/organize.py` is the only code that mutates anything; `writes.py` is the only caller. The hash, index, upload-header, commit and generation rules were verified against the live API; the sent-document blob set follows rmapi and is not yet confirmed live.
 
 - **Every hash is `sha256` of the blob's exact bytes** — for file blobs, document indexes and the root index alike. `serialize_index` must therefore reproduce the server's formatting byte-for-byte; it is verified against real indexes in the tests.
-- **Index header line**: `0:<owner>:<count>:<total_size>`, where owner is `.` for the root and the document UUID for a document index. Root entries use type `0`, `subfiles` = number of files, `size` = their total.
+- **Index header line**: `0:<owner>:<count>:<total_size>`, where owner is `.` for the root and the document UUID for a document index. Root entries use type `0`, `subfiles` = number of files, `size` = their total. Both kinds of index are sorted by id.
 - **Uploads need both headers**: `rm-filename` (recognised extension) and `x-goog-hash: crc32c=<base64>`. Missing the checksum gives 400.
-- **The root PUT is the only step that changes anything.** Upload everything first; a failure before the commit leaves the library untouched.
-- **Always pass the generation you read.** It is the optimistic-concurrency token — without it a concurrent tablet edit is silently overwritten.
-- **Never add a delete.** Nothing in this codebase removes documents; keep it that way unless explicitly asked.
-- **Rename and move must not touch `lastModified`.** It means "when did I last work in this"; bumping it on a bulk reorganisation flattens the recently-used ordering for everything touched. Sync does not need it — the tablet sees the change because the document hash changed. Only `create_folder` sets a fresh timestamp.
-- **File type comes from the blob list, not the name.** Most documents carry no extension in their visible name; a `.pdf`/`.epub` blob in `doc.files` is authoritative.
+- **The root PUT is the only step that changes anything.** Upload everything first; a failure before the commit leaves the library untouched. One batch (send, organize, undo) is exactly one root PUT.
+- **Always pass the generation you read.** It is the optimistic-concurrency token — without it a concurrent tablet edit is silently overwritten. A rejected commit is retried from a fresh read (3 attempts); each change is pinned to the root-entry hash it was planned against, and `ChangedSinceRead` aborts if that version is gone.
+- **The root guard runs before every root upload.** `verify_root_change(old_body, new_body, added, changed)` parses both root indexes and refuses any difference except the added ids and the touched ids' hash/size/subfiles: nothing lost, nothing else altered, sorted, header consistent. It is not optional and has its own tests and mutants.
+- **The write scope is checked in the planner, before any upload.** `write_scope.current()` (read per call) raises for `REMARKABLE_READ_ONLY`; `organizer` checks every source and destination path (and every folder it creates) against `REMARKABLE_WRITE_ROOT`, defaulting to `REMARKABLE_ROOT_PATH`. One violation refuses the whole batch. With neither set, writes go anywhere and a relative location means `/rm-mcp`.
+- **`dry_run` is the default for `remarkable_organize`** and makes no write request (GETs only, verified by request method in the tests).
+- **Never add a delete.** Nothing in this codebase removes documents, sends HTTP DELETE, drops a root entry (the guard refuses it) or sets `deleted` in metadata; `test_no_code_path_issues_a_delete` scans for it. Undo therefore leaves folders it created, and a send has no undo.
+- **Undo restores root entries, not edits.** The write log (`write_log` in the index DB) keeps each touched id's root entry before and after plus the replaced root hash; undo points the entries back only if they still equal "after". Apply + undo with no other change gives the byte-identical root index.
+- **Rename and move must not touch `lastModified`.** It means "when did I last work in this"; bumping it on a bulk reorganisation flattens the recently-used ordering for everything touched. Sync does not need it — the tablet sees the change because the document hash changed. Only new folders and sent documents get a fresh timestamp.
+- **A sent document is the blob set rmapi uploads**: `<id>.pdf|.epub`, `<id>.content` (rmapi's fields plus `pageCount`), `<id>.metadata`, and its index; a folder is one `.metadata` blob. The tablet adds `cPages` when it opens the document.
+- **File type comes from the blob list, not the name.** Most documents carry no extension in their visible name; a `.pdf`/`.epub` blob in `doc.files` is authoritative, then `.content`'s `fileType`.
 
 ## Gotchas
 

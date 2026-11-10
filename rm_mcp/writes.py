@@ -28,7 +28,12 @@ logger = logging.getLogger(__name__)
 
 def _fresh_collection():
     _helpers.invalidate_after_write()
-    client, items = _helpers.get_cached_collection()
+    try:
+        client, items = _helpers.get_cached_collection()
+    except ToolError:
+        raise
+    except Exception as e:
+        raise ToolError(f"Could not read the library: {e}")
     if client is None:
         raise ToolError("Not connected to the reMarkable Cloud. Run: uvx rm-mcp --setup")
     return client, items

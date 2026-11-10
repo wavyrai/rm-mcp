@@ -586,3 +586,19 @@ def test_no_code_path_issues_a_delete():
             for match in re.finditer(pattern, text):
                 offenders.append(f"{path.name}: {match.group(0)}")
     assert offenders == []
+
+
+async def test_not_connected_is_a_clear_tool_error(monkeypatch):
+    import rm_mcp.cache as cache_mod
+
+    def no_client():
+        raise RuntimeError("Not authenticated. Run: uvx rm-mcp --setup")
+
+    monkeypatch.setattr(cache_mod, "get_cached_collection", no_client)
+    from rm_mcp.tools import _helpers
+
+    monkeypatch.setattr(_helpers, "get_cached_collection", no_client)
+    message = await refused(
+        "remarkable_organize", changes=[{"op": "rename", "item": "x", "name": "y"}]
+    )
+    assert "Not authenticated" in message and "--setup" in message
