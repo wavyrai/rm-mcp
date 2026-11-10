@@ -74,6 +74,17 @@ CREATE TABLE IF NOT EXISTS page_ocr (
     PRIMARY KEY (page_hash, backend)
 );
 
+-- Applied write batches, for remarkable_undo. `record` is JSON: the root hash
+-- the batch replaced, and per touched document its root entry before and
+-- after. Kept after use (used_at set) as a log of what changed.
+CREATE TABLE IF NOT EXISTS write_log (
+    token TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    record TEXT NOT NULL,
+    used_at TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
     doc_id,
     content,
@@ -459,6 +470,46 @@ class DocumentIndex:
                     "INSERT OR REPLACE INTO _meta (key, value) VALUES ('sync_root_hash', ?)",
                     (root_hash,),
                 )
+
+    # -----------------------------------------------------------------
+    # Write log (undo)
+    # -----------------------------------------------------------------
+
+    def save_write(self, token: str, kind: str, record: Dict[str, Any]) -> None:
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO write_log (token, kind, created_at, record) VALUES (?, ?, ?, ?)",
+                (token, kind, datetime.now(timezone.utc).isoformat(), json.dumps(record)),
+            )
+
+    def get_write(self, token: str) -> Optional[Dict[str, Any]]:
+        row = (
+            self._get_connection()
+            .execute(
+                "SELECT kind, created_at, record, used_at FROM write_log WHERE token = ?",
+                (token,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return None
+        return {
+            "kind": row["kind"],
+            "created_at": row["created_at"],
+            "used_at": row["used_at"],
+            "record": json.loads(row["record"]),
+        }
+
+    def mark_write_undone(self, token: str) -> bool:
+        """Mark a batch undone; False if it already was (single use)."""
+        conn = self._get_connection()
+        with conn:
+            cur = conn.execute(
+                "UPDATE write_log SET used_at = ? WHERE token = ? AND used_at IS NULL",
+                (datetime.now(timezone.utc).isoformat(), token),
+            )
+        return cur.rowcount == 1
 
     # -----------------------------------------------------------------
     # Search

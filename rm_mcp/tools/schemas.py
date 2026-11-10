@@ -116,6 +116,7 @@ class StatusConfig(BaseModel):
     cache_ttl_seconds: int
     max_output_chars: int
     read_only: bool
+    writes: str = Field("", description="Where the write tools may write.")
 
 
 class StatusResult(BaseModel):
@@ -126,4 +127,70 @@ class StatusResult(BaseModel):
     index_coverage: Optional[Coverage] = None
     config: StatusConfig
     error: Optional[str] = None
+    hint: str
+
+
+# --- write tools ---
+
+
+class Change(BaseModel):
+    """One change in a remarkable_organize batch."""
+
+    op: Literal["rename", "move", "create_folder"]
+    item: Optional[str] = Field(
+        None, description="rename/move: the document or folder (id, path or unique name)."
+    )
+    name: Optional[str] = Field(None, description="rename: the new name (not a path).")
+    to: Optional[str] = Field(
+        None, description="move: destination folder (id, path or unique name; '/' = top)."
+    )
+    path: Optional[str] = Field(
+        None,
+        description="create_folder: '/A/New' (parent must exist) or 'New' "
+        "(under the default write folder, created if missing).",
+    )
+
+
+class PlannedChange(BaseModel):
+    op: str
+    id: str = Field(description="The item's id (for a new folder, the id it will get).")
+    kind: str = Field(description="folder or document.")
+    before: Optional[str] = Field(description="Path before; None for something new.")
+    after: str = Field(description="Path after.")
+
+
+class OrganizeResult(BaseModel):
+    dry_run: bool
+    applied: bool
+    changes: List[PlannedChange]
+    undo_token: Optional[str] = Field(None, description="Pass to remarkable_undo to revert.")
+    previous_root: Optional[str] = Field(
+        None, description="Root hash the batch replaced (a complete snapshot of the library)."
+    )
+    hint: str
+
+
+class SendResult(BaseModel):
+    id: str
+    name: str
+    path: str
+    type: str = Field(description="pdf or epub.")
+    page_count: int
+    size_bytes: int
+    source: str = Field(description="file, url or markdown.")
+    created_folders: List[str]
+    previous_root: str
+    hint: str
+
+
+class UndoResult(BaseModel):
+    token: str
+    reverted: List[PlannedChange] = Field(
+        description="Each item, from where it is to where it was."
+    )
+    left_in_place: List[str] = Field(
+        description="Folders the batch created; undo never deletes, so they stay."
+    )
+    previous_root: str
+    root: str
     hint: str

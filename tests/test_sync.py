@@ -17,7 +17,15 @@ import pytest
 import rm_mcp.cache as cache_mod
 import rm_mcp.index as index_mod
 from rm_mcp.blobstore import BlobHashMismatch, BlobStore
-from rm_mcp.clients.cloud import FILES_URL, ROOT_URL, RemarkableClient, serialize_index
+from rm_mcp.clients.cloud import (
+    FILES_URL,
+    ROOT_PUT_URL,
+    ROOT_URL,
+    RemarkableClient,
+    crc32c_header,
+    parse_index,
+    serialize_index,
+)
 
 
 def sha(data: bytes) -> str:
@@ -48,6 +56,12 @@ class FakeCloud:
         self.requests: Counter = Counter()
         self.failing: set = set()  # blob hashes that answer 500
         self.corrupt: set = set()  # blob hashes whose bytes come back altered
+        # Writes, enforcing the real API's rules (see test_integration.FakeCloud).
+        self.generation = 1
+        self.methods: Counter = Counter()  # HTTP method -> count
+        self.uploads: list = []  # rm-filename of every blob PUT, in order
+        self.root_updates = 0  # root PUTs accepted or not
+        self.conflicts = 0  # answer this many root PUTs with 412 first
 
     # --- building the library ---
 
@@ -99,7 +113,9 @@ class FakeCloud:
         del self.entries[doc_id]
 
     def commit(self) -> None:
-        self.root_hash = self._put(serialize_index(list(self.entries.values()), "."))
+        ordered = sorted(self.entries.values(), key=lambda e: e["id"])
+        self.root_hash = self._put(serialize_index(ordered, "."))
+        self.generation += 1
 
     def doc_index_hash(self, doc_id: str) -> str:
         return self.entries[doc_id]["hash"]
@@ -111,10 +127,42 @@ class FakeCloud:
 
     def request(self, method, url, headers=None, timeout=None, data=None, json=None):
         self.requests[url] += 1
+        self.methods[method] += 1
+        headers = headers or {}
         if url == ROOT_URL:
-            body = _json_dumps({"hash": self.root_hash, "generation": 1})
+            body = _json_dumps({"hash": self.root_hash, "generation": self.generation})
+            return FakeResponse(content=body.encode())
+        if method == "PUT" and url == ROOT_PUT_URL:
+            self.root_updates += 1
+            assert headers.get("rm-filename") == "roothash"
+            if self.conflicts:
+                self.conflicts -= 1
+                return FakeResponse(status_code=412, content=b"conflict")
+            if json["generation"] != self.generation:
+                return FakeResponse(status_code=412, content=b"generation conflict")
+            if json["hash"] not in self.blobs:
+                return FakeResponse(status_code=400, content=b"root blob not uploaded")
+            self.root_hash = json["hash"]
+            self.entries = {e["id"]: e for e in parse_index(self.blobs[self.root_hash])}
+            self.generation += 1
+            body = _json_dumps({"hash": self.root_hash, "generation": self.generation})
             return FakeResponse(content=body.encode())
         digest = url.rsplit("/", 1)[-1]
+        if method == "PUT":
+            name = headers.get("rm-filename") or ""
+            if not name.endswith(
+                (".docSchema", ".metadata", ".content", ".pagedata", ".rm", ".pdf", ".epub")
+            ):
+                return FakeResponse(status_code=400, content=b"unexpected 'rm-filename'")
+            if headers.get("x-goog-hash") != crc32c_header(data):
+                return FakeResponse(status_code=400, content=b"missing checksum")
+            if sha(data) != digest:
+                return FakeResponse(status_code=400, content=b"hash does not match body")
+            self.blobs[digest] = data
+            self.uploads.append(name)
+            return FakeResponse()
+        if method != "GET":
+            return FakeResponse(status_code=405, content=b"method not allowed")
         if digest in self.failing:
             return FakeResponse(status_code=500, content=b"transient")
         if digest not in self.blobs:

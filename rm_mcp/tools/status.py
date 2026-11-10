@@ -1,6 +1,6 @@
 """remarkable_status — connection, library size, index and settings."""
 
-from rm_mcp import reader
+from rm_mcp import reader, write_scope
 from rm_mcp.config import env_bool
 from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
@@ -17,6 +17,7 @@ def _config() -> StatusConfig:
         cache_ttl_seconds=_CACHE_TTL_SECONDS,
         max_output_chars=reader.max_output_chars(),
         read_only=env_bool("REMARKABLE_READ_ONLY"),
+        writes=write_scope.describe(),
     )
 
 

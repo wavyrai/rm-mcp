@@ -1134,9 +1134,10 @@ class TestLibraryWriter:
         # Someone else changes the library first
         writer.rename("doc-loose", "Changed Elsewhere")
 
+        old_body = cloud.blobs[cloud.root_hash]
         root_entries = writer.client.get_index(cloud.root_hash, ".")
         with pytest.raises(RootConflict):
-            writer._commit(root_entries, stale_generation)
+            writer._commit(old_body, root_entries, stale_generation, set(), set())
         # The other change survived
         assert cloud.visible_names()["doc-loose"][0] == "Changed Elsewhere"
 
@@ -1233,14 +1234,25 @@ class TestOrganizingTools:
     async def test_create_folder_at_top_level(self):
         cloud, client = self.setup_cloud()
         with self.library(client):
-            data = await call("remarkable_create_folder", path="Inbox")
+            data = await call("remarkable_create_folder", path="/Inbox")
         assert data["path"] == "/Inbox"
         assert ("Inbox", "", "CollectionType") in cloud.visible_names().values()
+
+    async def test_relative_folder_goes_under_the_default_write_folder(self):
+        """No write root and no root path: a bare name lands in /rm-mcp (created)."""
+        cloud, client = self.setup_cloud()
+        with self.library(client):
+            data = await call("remarkable_create_folder", path="Inbox")
+        assert data["path"] == "/rm-mcp/Inbox"
+        names = cloud.visible_names()
+        [rm_mcp_id] = [k for k, v in names.items() if v == ("rm-mcp", "", "CollectionType")]
+        assert ("Inbox", rm_mcp_id, "CollectionType") in names.values()
+        assert cloud.root_updates == 1  # both folders in one commit
 
     async def test_create_duplicate_folder_is_refused(self):
         cloud, client = self.setup_cloud()
         with self.library(client):
-            data = await call("remarkable_create_folder", path="Work")
+            data = await call("remarkable_create_folder", path="/Work")
         assert data["_error"]["type"] == "already_exists"
         assert cloud.root_updates == 0
 

@@ -110,16 +110,19 @@ class TestMCPServerInitialization:
 
     @pytest.mark.asyncio
     async def test_tools_count(self):
-        """7 v2 tools, 4 deprecated aliases and 3 organising tools."""
+        """7 read tools, 3 write tools, 4 deprecated read and 3 deprecated write aliases."""
         tools = await mcp.list_tools()
-        assert len(tools) == 14, f"Expected 14 tools, got {len(tools)}"
+        assert len(tools) == 17, f"Expected 17 tools, got {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_only_organizing_tools_are_writes(self):
-        """Only the organising tools and the local transcript store write."""
+        """Only the write tools and the local transcript store write."""
         tools = await mcp.list_tools()
         writers = {t.name for t in tools if not t.annotations.read_only_hint}
         assert writers == {
+            "remarkable_send",
+            "remarkable_organize",
+            "remarkable_undo",
             "remarkable_rename",
             "remarkable_move",
             "remarkable_create_folder",
@@ -133,6 +136,9 @@ class TestMCPServerInitialization:
         """Every tool carries a title (top-level and in annotations) and explicit hints."""
         tools = await mcp.list_tools()
         writes = {
+            "remarkable_send",
+            "remarkable_organize",
+            "remarkable_undo",
             "remarkable_rename",
             "remarkable_move",
             "remarkable_create_folder",
