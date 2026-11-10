@@ -159,11 +159,15 @@ def state(tmp_path):
     index.close()
 
 
-def make_client(cloud: FakeCloud, state, tmp_path, blob_dir: str = "blobs") -> RemarkableClient:
+def make_client(
+    cloud: FakeCloud, state, tmp_path, blob_dir: Optional[str] = "blobs"
+) -> RemarkableClient:
+    """A real client on the fake cloud. blob_dir=None runs without a blob store."""
+    store = BlobStore(tmp_path / blob_dir, max_bytes=500 * 1024 * 1024) if blob_dir else None
     client = RemarkableClient(
         device_token="",
         user_token="token",
-        blob_store=BlobStore(tmp_path / blob_dir, max_bytes=500 * 1024 * 1024),
+        blob_store=store,
         state_store=state,
     )
     client._session = cloud
@@ -191,9 +195,12 @@ class TestIncrementalSync:
         assert cloud.total() == 2 + 2 * 1000
         assert max(cloud.requests.values()) == 1
 
-    def test_one_changed_document_costs_only_its_own_blobs(self, tmp_path, state):
+    # Without a blob store too: the diff alone must avoid refetching unchanged
+    # documents, not the disk cache absorbing a full refetch.
+    @pytest.mark.parametrize("blob_dir", ["blobs", None])
+    def test_one_changed_document_costs_only_its_own_blobs(self, tmp_path, state, blob_dir):
         cloud = make_library(1000)
-        client = make_client(cloud, state, tmp_path)
+        client = make_client(cloud, state, tmp_path, blob_dir=blob_dir)
         client.get_meta_items()
         cloud.reset_counts()
 
@@ -245,7 +252,7 @@ class TestIncrementalSync:
         cloud.commit()
         cloud.reset_counts()
 
-        docs = make_client(cloud, state, tmp_path).get_meta_items()
+        docs = make_client(cloud, state, tmp_path, blob_dir=None).get_meta_items()
 
         assert by_id(docs)["doc-0003"].name == "Edited while we were down"
         assert cloud.total() <= 4
@@ -352,11 +359,34 @@ class TestIncrementalSync:
 
 
 class TestCollectionCacheUsesIncrementalSync:
+    def test_incomplete_sync_is_retried_with_an_unchanged_root(self, tmp_path, state, monkeypatch):
+        import rm_mcp.api as api_mod
+
+        cloud = make_library(10)
+        client = make_client(cloud, state, tmp_path)
+        monkeypatch.setattr(api_mod, "_client_singleton", client)
+        monkeypatch.setattr(cache_mod, "_CACHE_TTL_SECONDS", 0)
+        cache_mod.invalidate_collection_cache()
+        try:
+            cache_mod.get_cached_collection()
+            cloud.set_doc("doc-0006", "Arrives late")
+            cloud.commit()
+            cloud.failing.add(metadata_hash(cloud, "doc-0006"))
+            _client, collection = cache_mod.get_cached_collection()
+            assert by_id(collection)["doc-0006"].stale is True
+
+            cloud.failing.clear()
+            _client, collection = cache_mod.get_cached_collection()
+
+            assert by_id(collection)["doc-0006"].name == "Arrives late"
+        finally:
+            cache_mod.invalidate_collection_cache()
+
     def test_ttl_expiry_with_one_change(self, tmp_path, state, monkeypatch):
         import rm_mcp.api as api_mod
 
         cloud = make_library(300)
-        client = make_client(cloud, state, tmp_path)
+        client = make_client(cloud, state, tmp_path, blob_dir=None)
         monkeypatch.setattr(api_mod, "_client_singleton", client)
         monkeypatch.setattr(cache_mod, "_CACHE_TTL_SECONDS", 0)
         cache_mod.invalidate_collection_cache()
@@ -406,11 +436,12 @@ class TestDownload:
         with zipfile.ZipFile(io.BytesIO(raw)) as zf:
             assert zf.read("nb/p1.rm") == b"one"
 
-    def test_corrupted_network_bytes_are_rejected(self, tmp_path, state):
+    @pytest.mark.parametrize("blob_dir", ["blobs", None])
+    def test_corrupted_network_bytes_are_rejected(self, tmp_path, state, blob_dir):
         cloud = FakeCloud()
         cloud.set_doc("nb", "Notebook", pages={"p1": b"one"})
         cloud.commit()
-        client = make_client(cloud, state, tmp_path)
+        client = make_client(cloud, state, tmp_path, blob_dir=blob_dir)
         doc = client.get_meta_items()[0]
 
         cloud.corrupt.add(sha(b"one"))
