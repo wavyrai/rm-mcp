@@ -581,7 +581,7 @@ def test_no_code_path_issues_a_delete():
     ]
     offenders = []
     for path in package.rglob("*.py"):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         for pattern in patterns:
             for match in re.finditer(pattern, text):
                 offenders.append(f"{path.name}: {match.group(0)}")
