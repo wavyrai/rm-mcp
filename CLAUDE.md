@@ -14,7 +14,9 @@ rm-mcp is an MCP (Model Context Protocol) server that gives AI assistants access
 ```
 rm_mcp/                   # Main package
   server.py               # MCPServer subclass & initialization
-  cli.py                  # CLI (--setup, --register, or start server)
+  cli.py                  # CLI: setup, doctor, logout, or start the server
+  auth.py                 # Token file location, precedence, permissions
+  client_config.py        # Claude Code / Claude Desktop configuration
   api.py                  # Singleton reMarkable Cloud client
   config.py               # Tolerant env var parsing (env_int/env_bool)
   models.py               # Document/Folder dataclasses
@@ -56,6 +58,7 @@ tests/test_fixtures.py    # Extraction against tests/fixtures (make_fixtures.py)
 tests/test_sync.py        # Incremental sync, blob store, hash-keyed caches (fake cloud)
 tests/test_render.py      # Renderer goldens (tests/fixtures/goldens, --update-goldens)
 tests/test_writes.py      # send / organize / undo, scope, root guard on the fake cloud
+tests/test_auth.py        # Token precedence, file permissions, setup/doctor, Desktop config
 setup.sh                  # One-line installer script
 server.json               # MCP Registry server definition
 server.py                 # Root-level backwards-compatible entry point
@@ -121,14 +124,16 @@ The one-line installer lives in two places and must be kept in sync:
 
 Usage: `curl -fsSL https://thijsverreck.com/setup.sh | sh`
 
-Steps: install deps (Homebrew, uv, Claude Code) → register reMarkable tablet → configure Claude Code → configure Claude Desktop (macOS only).
+It installs uv if `uvx` is missing and runs `uvx rm-mcp@latest setup` with the terminal on stdin. Everything else (registration, token file, client configuration) is `rm-mcp setup`'s job, which asks before touching a client. The script installs nothing else, never writes a config itself and carries no `|| true`.
 
 When modifying `setup.sh`, commit and push to **both** repos.
 
-Key details:
-- `claude mcp add` uses `|| true` so the script continues even if the server is already configured
-- Claude Desktop config uses the **full path to uvx** (resolved via `command -v uvx`) because Claude Desktop has a limited PATH and can't find `~/.local/bin/uvx`
-- All `uvx` commands use `rm-mcp@latest` (not `--refresh rm-mcp`) to ensure the latest PyPI version is always used, even if a persistent tool install exists
+## Auth and client setup
+
+- **Token file** (`auth.py`): `token.json` in the platform config dir (`~/.config/rm-mcp`, `~/Library/Application Support/rm-mcp`, `%APPDATA%\rm-mcp`), mode 0600. Read order: our file, `REMARKABLE_TOKEN`, then `~/.rmapi` (rmapi's file: read, never written). `api.get_rmapi()` rebuilds the client when setup replaces the file. A renewed user token is written back to our file only.
+- **`rm-mcp setup`** registers with `deviceDesc` for the real OS, saves the token, then offers Claude Code (`claude mcp add -s user remarkable -- uvx rm-mcp@latest`, run without a shell) and Claude Desktop (`client_config.configure_desktop`: never writes a file it can't parse, atomic write, `.bak` copy, full path to uvx). No token goes into any client config.
+- **`rm-mcp doctor`** checks token, connection (skip with `--offline`), uvx and client configs and prints fixes; **`rm-mcp logout`** removes only our file.
+- Tests never see the real home: `tests/conftest.py` points HOME/XDG_CONFIG_HOME/APPDATA at a temp dir and clears `REMARKABLE_TOKEN`.
 
 ## MCP Registry
 
@@ -142,7 +147,7 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `REMARKABLE_TOKEN` | Yes | Cloud API auth token |
+| `REMARKABLE_TOKEN` | No | Token, used only when rm-mcp's token file is absent (`rm-mcp setup` writes the file) |
 | `REMARKABLE_ROOT_PATH` | No | Restrict to a folder (e.g. `/Work`) |
 | `REMARKABLE_READ_ONLY` | No | Set `1` to refuse every write |
 | `REMARKABLE_WRITE_ROOT` | No | Folder (full path) every write must stay inside; default `REMARKABLE_ROOT_PATH` |
@@ -195,6 +200,7 @@ These are invariants, not preferences — each one exists because breaking it ca
 - **The write scope is checked in the planner, before any upload.** `write_scope.current()` (read per call) raises for `REMARKABLE_READ_ONLY`; `organizer` checks every source and destination path (and every folder it creates) against `REMARKABLE_WRITE_ROOT`, defaulting to `REMARKABLE_ROOT_PATH`. One violation refuses the whole batch. With neither set, writes go anywhere and a relative location means `/rm-mcp`.
 - **`dry_run` is the default for `remarkable_organize`** and makes no write request (GETs only, verified by request method in the tests).
 - **Never add a delete.** Nothing in this codebase removes documents, sends HTTP DELETE, drops a root entry (the guard refuses it) or sets `deleted` in metadata; `test_no_code_path_issues_a_delete` scans for it. Undo therefore leaves folders it created, and a send has no undo.
+- **No undo log, no organize.** `writes.apply_plan` reserves the `write_log` row before the commit; if the index is unavailable or the insert fails, the batch is refused with nothing uploaded.
 - **Undo restores root entries, not edits.** The write log (`write_log` in the index DB) keeps each touched id's root entry before and after plus the replaced root hash; undo points the entries back only if they still equal "after". Apply + undo with no other change gives the byte-identical root index.
 - **Rename and move must not touch `lastModified`.** It means "when did I last work in this"; bumping it on a bulk reorganisation flattens the recently-used ordering for everything touched. Sync does not need it — the tablet sees the change because the document hash changed. Only new folders and sent documents get a fresh timestamp.
 - **A sent document is the blob set rmapi uploads**: `<id>.pdf|.epub`, `<id>.content` (rmapi's fields plus `pageCount`), `<id>.metadata`, and its index; a folder is one `.metadata` blob. The tablet adds `cPages` when it opens the document.
