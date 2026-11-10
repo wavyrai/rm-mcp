@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Removed the daily canary workflow (`canary.yml`, `scripts/canary.py`).
+
 ## 2.0.0
 
 A rebuild of rm-mcp: ten id-addressed tools, writes that never delete, a token that setup can actually replace, and installs for Claude Code and Claude Desktop.
