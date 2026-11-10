@@ -129,54 +129,29 @@ def archive_content_hash(zip_path: Path) -> str:
 
 
 def get_page_hashes(zip_path: Path) -> List[Optional[str]]:
-    """SHA-256 of each page's .rm blob, in page order (None for blank pages).
+    """Content hash of each page, in page order (None for a blank notebook page).
 
-    A page's .rm bytes are everything its render and its OCR depend on, so the
-    hash is the cache key for both: editing one page changes only its own key.
+    A notebook page's hash is the sha256 of its .rm blob. A page over a PDF or
+    EPUB also folds in the source's hash and its page index, since the render
+    (and so the OCR) shows both. Editing one page changes only its own key.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            _safe_extractall(zf, tmpdir_path)
-        return [
-            hashlib.sha256(f.read_bytes()).hexdigest() if f is not None else None
-            for f in _get_ordered_rm_files(tmpdir_path)
-        ]
+    from rm_mcp.extract.pages import page_content_hashes, read_page_plan
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        return page_content_hashes(zf, read_page_plan(zf))
 
 
 def get_document_page_count(zip_path: Path) -> int:
     """
     Get the number of pages in a reMarkable document zip.
 
-    Uses the .content metadata (cPages.pages or pages array) which lists all
-    pages including blank ones. Falls back to counting .rm files if no metadata.
-
-    Args:
-        zip_path: Path to the document zip file
-
-    Returns:
-        Number of pages (0 if unable to determine)
+    The .content page list counts blank and inserted pages. Without one, the
+    .rm files count, and failing those the source PDF/EPUB's own pages.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
+    from rm_mcp.extract.pages import read_page_plan
 
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            _safe_extractall(zf, tmpdir_path)
-
-        # Read page count from .content metadata (includes blank pages)
-        for content_file in tmpdir_path.glob("*.content"):
-            try:
-                data = json.loads(content_file.read_text())
-                if "cPages" in data and "pages" in data["cPages"]:
-                    return len(data["cPages"]["pages"])
-                if "pages" in data and isinstance(data["pages"], list):
-                    return len(data["pages"])
-            except Exception:
-                pass
-            break
-
-        # Fallback: count .rm files (misses blank pages)
-        return len(list(tmpdir_path.glob("**/*.rm")))
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        return len(read_page_plan(zf).pages)
 
 
 def _extract_source_pages(tmpdir_path: Path) -> List[str]:

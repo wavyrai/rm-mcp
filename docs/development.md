@@ -184,13 +184,11 @@ The workflow automatically:
 |---------|---------|
 | `mcp` | Model Context Protocol SDK |
 | `requests` | HTTP client for reMarkable Cloud API |
-| `rmscene` | Native .rm file parser for text extraction |
-| `pymupdf` | PDF text extraction |
+| `rmscene` | Native .rm file parser (text extraction, rendering) |
+| `pymupdf` | PDF text extraction; draws pages to PNG/SVG |
 | `ebooklib` | EPUB text extraction |
-| `cairosvg` | SVG to PNG rendering |
 | `Pillow` | Image processing |
 | `beautifulsoup4` | HTML/XML parsing for EPUBs |
-| `rmc` | reMarkable rendering tools |
 
 ## Environment Variables
 

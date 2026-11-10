@@ -431,7 +431,7 @@ When `include_ocr=True`, OCR text is included in the response (uses sampling if 
 ### Notes
 
 - Works best with notebooks and handwritten content
-- For PDFs/EPUBs, renders the annotation layer only (not the underlying document)
+- Pages render at full size; PDF/EPUB pages show the document page with the ink on top
 - SVG format is useful for further editing in design tools
 - RGBA colors (8-digit hex) allow transparency control
 

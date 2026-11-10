@@ -122,10 +122,7 @@ def _make_image_resource(client, document):
                 tmp_path, page_num, background_color=get_background_color()
             )
             if png_data is None:
-                raise RuntimeError(
-                    f"Failed to render page {page_num}. "
-                    "Make sure 'rmc' and 'cairosvg' are installed."
-                )
+                raise RuntimeError(f"Failed to render page {page_num}; see the server log.")
             return png_data
 
     return image_resource
@@ -158,9 +155,7 @@ def _make_svg_resource(client, document):
                 tmp_path, page_num, background_color=get_background_color()
             )
             if svg_content is None:
-                raise RuntimeError(
-                    f"Failed to render page {page_num} to SVG. Make sure 'rmc' is installed."
-                )
+                raise RuntimeError(f"Failed to render page {page_num} to SVG; see the server log.")
             return svg_content
 
     return svg_resource

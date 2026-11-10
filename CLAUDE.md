@@ -32,7 +32,9 @@ rm_mcp/                   # Main package
   clients/
     organize.py           # Merkle-tree mutation + root commit
   extract/                # Content extraction
-    notebook.py, pdf.py, epub.py, render.py
+    notebook.py, pdf.py, epub.py
+    pages.py              # .content page plan: tablet page → .rm + source PDF/EPUB page
+    render.py             # rmscene + pymupdf page renderer (PNG/SVG, no system libs)
   ocr/                    # OCR backends
     sampling.py           # Uses client LLM via MCP sampling (only backend)
   clients/
@@ -41,6 +43,7 @@ tests/test_server.py      # Unit tests — mocked client, response shapes
 tests/test_integration.py # Integration tests — fake library, real index/ZIP/PDF
 tests/test_fixtures.py    # Extraction against tests/fixtures (make_fixtures.py)
 tests/test_sync.py        # Incremental sync, blob store, hash-keyed caches (fake cloud)
+tests/test_render.py      # Renderer goldens (tests/fixtures/goldens, --update-goldens)
 setup.sh                  # One-line installer script
 server.json               # MCP Registry server definition
 server.py                 # Root-level backwards-compatible entry point
@@ -106,7 +109,7 @@ The one-line installer lives in two places and must be kept in sync:
 
 Usage: `curl -fsSL https://thijsverreck.com/setup.sh | sh`
 
-Steps: install deps (Homebrew, Cairo, uv, Claude Code) → register reMarkable tablet → configure Claude Code → configure Claude Desktop (macOS only).
+Steps: install deps (Homebrew, uv, Claude Code) → register reMarkable tablet → configure Claude Code → configure Claude Desktop (macOS only).
 
 When modifying `setup.sh`, commit and push to **both** repos.
 
@@ -157,9 +160,9 @@ These are invariants, not preferences — each one exists because breaking it ca
 - **Don't swallow cache failures at `debug`.** A cache that fails silently looks identical to a slow one. L2 write failures log at `warning`.
 - **Every derived-content cache key is the content hash of what it was derived from.** Never key by document ID or page number alone; that serves stale text after an edit. The scheme:
   - Blobs (`blobstore.py`): the blob's sha256, the same hash the cloud addresses it by. Bytes are verified on every read and write, and a blob whose bytes don't match is never served.
-  - Page OCR (`cache.get_cached_page_ocr`, `index.page_ocr`): `(page_hash, backend)`, where `page_hash` is the sha256 of the page's `.rm` blob (`extract.get_page_hashes`). Editing one page invalidates only that page. No hash, no cache hit.
+  - Page OCR (`cache.get_cached_page_ocr`, `index.page_ocr`): `(page_hash, backend)`, where `page_hash` is the sha256 of the page's `.rm` blob (`extract.get_page_hashes`); for a page over a PDF/EPUB it also folds in the source's sha256 and the source page index, since the render shows both. Editing one page invalidates only that page. No hash, no cache hit.
   - Extraction results: `(doc_id, archive_content_hash)`, a hash over the archive's member names and their sha256.
-  - Renders: the page hash, plus format and background. Blank pages fall back to the document hash. Downloads are keyed by the document hash.
+  - Renders: the page hash, plus format and background. Blank notebook pages fall back to the document hash. Downloads are keyed by the document hash.
   - Searchable pages (`pages`/FTS) are not a cache. They are tied to `documents.doc_hash` and cleared when sync sees a new version (`mark_document_version`).
   Shared in-memory caches are written from worker threads, so each one has a lock.
 - **Sync is incremental and keeps what it can't refresh.** The client diffs the root index against the last known state (in memory and in `sync_documents` in the index DB) and fetches the blob index and metadata only for new or changed documents. If a document fails to fetch, it keeps its previous version (`Document.stale`), the sync is marked incomplete, and the next call retries it even when the root hash is unchanged. A fetch error never drops a known document (a new one that fails appears on the retry), and `download()` raises if any blob fails.

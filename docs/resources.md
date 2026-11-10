@@ -90,7 +90,7 @@ remarkablesvg:///Sketches/Logo.page-2.svg
 ### Notes
 
 - Only available for notebooks (not PDFs or EPUBs)
-- For PDFs/EPUBs, the annotation layer would be rendered (not the underlying document)
+- The `remarkable_image` tool renders PDF/EPUB pages with the ink on top of the document page
 - Use the `remarkable_image` tool for more control (custom backgrounds, transparent output)
 
 ## How Resources Are Registered

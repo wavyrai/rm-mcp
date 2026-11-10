@@ -49,8 +49,8 @@ async def remarkable_image(
     When REMARKABLE_OCR_BACKEND=sampling is set and the client supports sampling,
     the client's own LLM will be used for OCR (no API keys needed).
 
-    Note: This works best with notebooks and handwritten content. For PDFs/EPUBs,
-    the annotations layer is rendered (not the underlying PDF content).
+    Every page renders at its full size. PDF/EPUB pages show the document page
+    with the ink on top; pages inserted on the tablet render as notebook pages.
     </instructions>
     <parameters>
     - document: Document name or path (use remarkable_browse to find documents)
@@ -117,10 +117,7 @@ async def remarkable_image(
                 return _helpers.make_error(
                     error_type="no_pages",
                     message=f"Document '{target_doc.VissibleName}' has no renderable pages.",
-                    suggestion=(
-                        "This may be a PDF/EPUB without annotations. "
-                        "Use remarkable_read() to extract text content instead."
-                    ),
+                    suggestion="Use remarkable_read() to extract text content instead.",
                     compact=compact,
                 )
 
@@ -148,8 +145,8 @@ async def remarkable_image(
                 if svg_content is None:
                     return _helpers.make_error(
                         error_type="render_failed",
-                        message="Failed to render page to SVG.",
-                        suggestion="Make sure 'rmc' is installed. Try: uv add rmc",
+                        message="Failed to render page to SVG. Check server logs for details.",
+                        suggestion="Try output_format='png', or remarkable_read() for the text.",
                         compact=compact,
                     )
 
@@ -243,9 +240,8 @@ async def remarkable_image(
                             f"Check server logs for details."
                         ),
                         suggestion=(
-                            "Make sure 'rmc' and 'cairosvg' are installed "
-                            "and the Cairo system library is available. "
-                            "On macOS: brew install cairo"
+                            "The page may use a pre-v6 .rm format. "
+                            "Use remarkable_read() to extract its text instead."
                         ),
                         compact=compact,
                     )

@@ -28,12 +28,9 @@ from rm_mcp.extract.notebook import (  # noqa: F401
 from rm_mcp.extract.pdf import extract_text_from_pdf  # noqa: F401
 from rm_mcp.extract.render import (  # noqa: F401
     _DEFAULT_BACKGROUND_COLOR,
-    CONTENT_MARGIN,
     REMARKABLE_BACKGROUND_COLOR,
     REMARKABLE_HEIGHT,
     REMARKABLE_WIDTH,
-    _add_svg_background,
-    _get_svg_content_bounds,
     _parse_hex_color,
     get_background_color,
     render_page_from_document_zip,

@@ -194,8 +194,7 @@ def remarkable_example(param: str) -> str:
 - `mcp` - Model Context Protocol SDK
 - `requests` - HTTP client for reMarkable Cloud API
 - `rmscene` - Native .rm file parser for text extraction (v3+ format)
-- `rmc` - reMarkable file conversion utilities (for page rendering)
-- `cairosvg` - SVG to PNG conversion (for page rendering)
+- `pymupdf` - draws pages (ink, typed text, PDF/EPUB underneath) to PNG/SVG
 
 ## Environment Variables
 
