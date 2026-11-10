@@ -35,32 +35,28 @@ def extract_text_from_rm_file(rm_file_path: Path) -> List[str]:
     Does NOT require OCR - text is stored natively in v6 .rm files.
     """
     try:
-        from rmscene import read_blocks
-        from rmscene.scene_items import Text
-        from rmscene.scene_tree import SceneTree
-
-        with open(rm_file_path, "rb") as f:
-            tree = SceneTree()
-            for block in read_blocks(f):
-                tree.add_block(block)
-
-        text_lines = []
-
-        # Extract text from the scene tree
-        for item in tree.root.children.values():
-            if hasattr(item, "value") and isinstance(item.value, Text):
-                text_obj = item.value
-                if hasattr(text_obj, "items"):
-                    for text_item in text_obj.items:
-                        if hasattr(text_item, "value") and text_item.value:
-                            text_lines.append(str(text_item.value))
-
-        return text_lines
-
+        from rmscene import read_tree
+        from rmscene.text import TextDocument
     except ImportError:
         return []  # rmscene not available
+
+    try:
+        with open(rm_file_path, "rb") as f:
+            tree = read_tree(f)
+        # Typed text lives in the page's root text block, not among the
+        # layer's children (those hold strokes and highlight glyph ranges).
+        if tree.root_text is None:
+            return []
+        # TextDocument resolves the CRDT ordering, deletions and inline
+        # formatting codes into one entry per paragraph.
+        lines = [str(p) for p in TextDocument.from_scene_item(tree.root_text).contents]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return lines if any(line.strip() for line in lines) else []
     except Exception:
-        # Log but don't fail - file might be older format
+        # Older (pre-v6) files and unknown blocks fail to parse; that page
+        # simply has no typed text.
+        logger.debug("No typed text extracted from %s", rm_file_path, exc_info=True)
         return []
 
 
