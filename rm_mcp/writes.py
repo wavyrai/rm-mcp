@@ -22,6 +22,7 @@ from rm_mcp.clients.organize import ChangedSinceRead, LibraryWriter, Restore, Ro
 from rm_mcp.paths import _apply_root_filter, _get_root_path
 from rm_mcp.tools import _helpers
 from rm_mcp.tools.schemas import OrganizeResult, PlannedChange, SendResult, UndoResult
+from rm_mcp.write_scope import WriteRefused
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def organize(changes: List[Dict[str, Any]], dry_run: bool = True) -> OrganizeRes
                 f"remarkable_undo('{result['undo_token']}') reverts it while the items are "
                 "unchanged."
                 if result["undo_token"]
-                else "No undo token: the local index is disabled."
+                else "The undo record could not be completed; see the server log."
             )
             + " The tablet shows the change after it syncs."
         ),
@@ -98,7 +99,13 @@ def organize(changes: List[Dict[str, Any]], dry_run: bool = True) -> OrganizeRes
 
 
 def apply_plan(client, plan: organizer.Plan) -> Dict[str, Any]:
-    """Commit a planned organize batch and record it for undo."""
+    """Commit a planned organize batch and record it for undo.
+
+    The undo row is reserved before the commit. If the undo log cannot be
+    written (index disabled or unwritable), the batch is refused and nothing
+    is uploaded: an organize is never applied without an undo token.
+    """
+    token = _reserve_undo(plan)
     result = _commit(LibraryWriter(client).apply, plan.edits(), plan.new_docs())
     record = {
         "previous_root": result["previous_root"],
@@ -116,16 +123,30 @@ def apply_plan(client, plan: organizer.Plan) -> Dict[str, Any]:
             for s in plan.steps
         ],
     }
-    token = None
-    index = _index()
-    if index is not None:
-        token = uuid.uuid4().hex
-        try:
-            index.save_write(token, "organize", record)
-        except Exception:
-            logger.warning("Could not record batch for undo", exc_info=True)
-            token = None
+    try:
+        _index().complete_write(token, "organize", record)
+    except Exception:
+        logger.error("Batch applied but its undo record could not be completed", exc_info=True)
+        token = None
     return {**result, "undo_token": token}
+
+
+def _reserve_undo(plan: organizer.Plan) -> str:
+    refusal = (
+        "Refused: the undo log could not be recorded ({cause}), and remarkable_organize never "
+        "applies a batch it cannot undo. Nothing was changed. Check that the index at "
+        "REMARKABLE_INDEX_PATH (default ~/.cache/rm-mcp/index.db) is writable."
+    )
+    index = _index()
+    if index is None:
+        raise WriteRefused(refusal.format(cause="the local index is unavailable"), "no_undo_log")
+    token = uuid.uuid4().hex
+    try:
+        index.save_write(token, "organize-pending", {"changes": plan.describe()})
+    except Exception as e:
+        logger.warning("Could not reserve an undo record", exc_info=True)
+        raise WriteRefused(refusal.format(cause=f"{type(e).__name__}: {e}"), "no_undo_log")
+    return token
 
 
 # =============================================================================
@@ -181,6 +202,8 @@ def undo(token: str) -> UndoResult:
     entry = index.get_write(token.strip()) if index is not None else None
     if entry is None:
         raise ToolError(f"No batch with undo token '{token}'.")
+    if entry["kind"] == "organize-pending":
+        raise ToolError("That batch was never committed, so there is nothing to undo.")
     if entry["kind"] != "organize":
         raise ToolError(
             "Only remarkable_organize batches can be undone. A send is not undone, because "

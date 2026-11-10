@@ -483,6 +483,17 @@ class DocumentIndex:
                 (token, kind, datetime.now(timezone.utc).isoformat(), json.dumps(record)),
             )
 
+    def complete_write(self, token: str, kind: str, record: Dict[str, Any]) -> None:
+        """Replace a reserved row's kind and record once its batch is committed."""
+        conn = self._get_connection()
+        with conn:
+            cur = conn.execute(
+                "UPDATE write_log SET kind = ?, record = ? WHERE token = ?",
+                (kind, json.dumps(record), token),
+            )
+        if cur.rowcount != 1:
+            raise KeyError(f"No reserved write {token}")
+
     def get_write(self, token: str) -> Optional[Dict[str, Any]]:
         row = (
             self._get_connection()

@@ -602,3 +602,53 @@ async def test_not_connected_is_a_clear_tool_error(monkeypatch):
         "remarkable_organize", changes=[{"op": "rename", "item": "x", "name": "y"}]
     )
     assert "Not authenticated" in message and "--setup" in message
+
+
+# =============================================================================
+# Undo safety: no undo log, no commit
+# =============================================================================
+
+_RENAME = [{"op": "rename", "item": NOTEBOOK, "name": "Daily"}]
+
+
+async def test_organize_refuses_when_the_index_is_unavailable(cloud, monkeypatch):
+    import rm_mcp.index as index_mod
+
+    monkeypatch.setattr(index_mod, "_instance", None)
+    root, before = cloud.root_hash, names(cloud)
+    message = await refused("remarkable_organize", changes=_RENAME, dry_run=False)
+    assert "index is unavailable" in message and "Nothing was changed" in message
+    assert puts(cloud) == 0 and cloud.root_hash == root and names(cloud) == before
+
+
+async def test_organize_refuses_when_the_undo_log_cannot_be_written(cloud, monkeypatch):
+    import sqlite3
+
+    import rm_mcp.index as index_mod
+
+    def broken(*args, **kwargs):
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    monkeypatch.setattr(index_mod.get_instance(), "save_write", broken)
+    root = cloud.root_hash
+    message = await refused("remarkable_organize", changes=_RENAME, dry_run=False)
+    assert "readonly database" in message and "Nothing was changed" in message
+    assert puts(cloud) == 0 and cloud.root_hash == root
+
+
+async def test_deprecated_rename_refuses_without_an_undo_log(cloud, monkeypatch):
+    import rm_mcp.index as index_mod
+
+    monkeypatch.setattr(index_mod, "_instance", None)
+    root = cloud.root_hash
+    raw = await mcp.call_tool("remarkable_rename", {"item": NOTEBOOK, "new_name": "Daily"})
+    assert "undo" in str(raw)
+    assert puts(cloud) == 0 and cloud.root_hash == root
+
+
+async def test_dry_run_still_works_without_an_index(cloud, monkeypatch):
+    import rm_mcp.index as index_mod
+
+    monkeypatch.setattr(index_mod, "_instance", None)
+    plan = await data("remarkable_organize", changes=_RENAME)
+    assert plan["dry_run"] is True and puts(cloud) == 0
