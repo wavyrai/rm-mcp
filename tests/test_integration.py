@@ -43,7 +43,8 @@ def make_notebook_zip(page_ids: List[str], typed_text: Optional[str] = None) -> 
             json.dumps({"cPages": {"pages": [{"id": pid} for pid in page_ids]}}),
         )
         for pid in page_ids:
-            zf.writestr(f"doc/{pid}.rm", b"reMarkable .lines file\x00")
+            # Distinct bytes per page: OCR and renders are cached by page hash.
+            zf.writestr(f"doc/{pid}.rm", b"reMarkable .lines file\x00" + pid.encode())
         if typed_text:
             zf.writestr("doc/notes.txt", typed_text)
     return buffer.getvalue()
@@ -294,9 +295,14 @@ class TestIndexWritesLand:
 
     def test_cache_layer_persists_page_ocr(self, clean_state):
         """The cache helper writes through to the index for a fresh document."""
-        cache_mod.cache_page_ocr("fresh-doc", 2, "sampling", "transcribed text")
+        cache_mod.cache_page_ocr("fresh-doc", 2, "sampling", "transcribed text", page_hash="ph")
         cache_mod._page_ocr_cache.clear()  # force an L2 read
-        assert cache_mod.get_cached_page_ocr("fresh-doc", 2, "sampling") == "transcribed text"
+        assert (
+            cache_mod.get_cached_page_ocr("fresh-doc", 2, "sampling", page_hash="ph")
+            == "transcribed text"
+        )
+        # ...and the text is searchable as the document's page
+        assert clean_state.get_page_ocr("fresh-doc", 2) == "transcribed text"
 
     def test_write_with_nothing_to_store_releases_the_lock(self, clean_state):
         """An empty extraction must not leave a transaction open.
@@ -515,6 +521,39 @@ class TestSamplingOCRCoverage:
 
         assert len(calls) == 1
         assert "transcribed once" in data["content"]
+
+    async def test_edited_page_is_transcribed_again(self, monkeypatch, clean_state):
+        """OCR is keyed by page content: an edit re-runs only the edited page."""
+        calls = []
+
+        async def _ocr(ctx, png_data, max_tokens=2000):
+            calls.append(png_data.decode())
+            return f"text v{len(calls)}"
+
+        monkeypatch.setattr(_helpers, "ocr_via_sampling", _ocr)
+
+        def archive(page_two: bytes) -> bytes:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as zf:
+                zf.writestr(
+                    "doc.content", json.dumps({"cPages": {"pages": [{"id": "p1"}, {"id": "p2"}]}})
+                )
+                zf.writestr("doc/p1.rm", b"page one strokes")
+                zf.writestr("doc/p2.rm", page_two)
+            return buffer.getvalue()
+
+        library = FakeLibrary([doc("n1", "Journal", doc_hash="v1")], {"n1": archive(b"draft")})
+        with use_library(library):
+            await call("remarkable_read", document="Journal", pages="1-2", include_ocr=True)
+
+        # Page 2 is edited on the tablet: new document version, new page bytes.
+        library.documents = [doc("n1", "Journal", doc_hash="v2")]
+        library.archives["n1"] = archive(b"final")
+        with use_library(library):
+            data = await call("remarkable_read", document="Journal", page=2, include_ocr=True)
+
+        assert calls == ["page-1", "page-2", "page-2"]
+        assert "text v3" in data["content"]
 
     async def test_grep_reports_which_pages_were_searched(self, monkeypatch):
         """A grep miss must not claim the whole document lacks the term."""
@@ -803,19 +842,37 @@ class TestSyncApiContract:
         # Schema 4: a version line, a summary line, then the entries
         doc_index = (
             "4\n"
-            "0:.:doc-uuid:2:200\n"
+            "0:doc-uuid:2:200\n"
             "metahash:0:doc-uuid.metadata:0:100\n"
             "conthash:0:doc-uuid.content:0:100\n"
         ).encode()
         root_index = ("4\n0:.:1:300\ndochash:80000000:doc-uuid:2:200\n").encode()
+        content = b'{"pages": []}'
 
+        # Blobs are verified against their hash, so the fake addresses them
+        # by real SHA-256; the readable names map to those hashes.
+        from hashlib import sha256
+
+        def h(data: bytes) -> str:
+            return sha256(data).hexdigest()
+
+        doc_index = doc_index.replace(b"metahash", h(metadata).encode()).replace(
+            b"conthash", h(content).encode()
+        )
+        root_index = root_index.replace(b"dochash", h(doc_index).encode())
+        self.hashes = {
+            "roothash": h(root_index),
+            "dochash": h(doc_index),
+            "metahash": h(metadata),
+            "conthash": h(content),
+        }
         session = RecordingSession(
-            "roothash",
+            h(root_index),
             {
-                "roothash": root_index,
-                "dochash": doc_index,
-                "metahash": metadata,
-                "conthash": b'{"pages": []}',
+                h(root_index): root_index,
+                h(doc_index): doc_index,
+                h(metadata): metadata,
+                h(content): content,
             },
         )
         client = RemarkableClient(device_token="d", user_token="u")
@@ -827,21 +884,21 @@ class TestSyncApiContract:
         docs = client.get_meta_items()
 
         assert [d.name for d in docs] == ["Live Note"]
-        root_fetch = next(f for url, f in session.requests if url.endswith("roothash"))
+        root_fetch = next(f for url, f in session.requests if url.endswith(self.hashes["roothash"]))
         assert root_fetch == "root.docSchema"
 
     def test_document_index_is_fetched_with_its_filename(self):
         client, session = self.build_client()
         client.get_meta_items()
 
-        doc_fetch = next(f for url, f in session.requests if url.endswith("dochash"))
+        doc_fetch = next(f for url, f in session.requests if url.endswith(self.hashes["dochash"]))
         assert doc_fetch == "doc-uuid.docSchema"
 
     def test_each_blob_is_fetched_under_its_own_name(self):
         client, session = self.build_client()
         client.get_meta_items()
 
-        meta_fetch = next(f for url, f in session.requests if url.endswith("metahash"))
+        meta_fetch = next(f for url, f in session.requests if url.endswith(self.hashes["metahash"]))
         assert meta_fetch == "doc-uuid.metadata"
 
     def test_download_names_every_member(self):

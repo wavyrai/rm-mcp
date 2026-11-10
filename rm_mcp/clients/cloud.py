@@ -15,12 +15,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from rm_mcp.blobstore import get_default_store
 from rm_mcp.config import env_int
 from rm_mcp.models import Document, Folder  # noqa: F401
 
@@ -144,6 +145,10 @@ def parse_index(content: bytes) -> List[Dict[str, Any]]:
     return entries
 
 
+# Sentinel: "use the process-wide default" for the client's blob and state stores.
+_USE_DEFAULT: Any = object()
+
+
 class RootConflict(RuntimeError):
     """Raised when the library changed between reading and writing the root.
 
@@ -155,12 +160,40 @@ class RootConflict(RuntimeError):
 class RemarkableClient:
     """Client for reMarkable Cloud sync API."""
 
-    def __init__(self, device_token: str = "", user_token: str = ""):
+    def __init__(
+        self,
+        device_token: str = "",
+        user_token: str = "",
+        blob_store: Any = _USE_DEFAULT,
+        state_store: Any = _USE_DEFAULT,
+    ):
+        """
+        Args:
+            device_token: Long-lived device token.
+            user_token: Short-lived user token (renewed from the device token).
+            blob_store: Content-addressed blob cache (`blobstore.BlobStore`);
+                defaults to the process-wide store, None disables it.
+            state_store: Where the last synced library state persists (the
+                `index.DocumentIndex`); defaults to the index singleton, None
+                keeps sync state in memory only.
+        """
         self.device_token = device_token
         self.user_token = user_token
         self._documents: List[Document] = []
         self._documents_by_id: Dict[str, Document] = {}
         self._token_lock = threading.Lock()
+        self._blob_store_arg = blob_store
+        self._state_store_arg = state_store
+
+        # Incremental sync state. `_records` holds, per document, the last
+        # version fetched successfully; `_synced_root_hash` is the root hash
+        # those records fully reflect (None when the last sync left documents
+        # behind, which forces a re-diff on the next call).
+        self._sync_lock = threading.Lock()
+        self._state_loaded = False
+        self._records: Dict[str, Dict[str, Any]] = {}
+        self._synced_root_hash: Optional[str] = None
+        self._stale_ids: set = set()
 
         # Connection-pooling session with retry logic
         self._session = requests.Session()
@@ -346,9 +379,38 @@ class RemarkableClient:
                 ``<uuid>.metadata``, ...). Requests without it are rejected
                 with HTTP 400 regardless of the hash.
         """
+        store = self._blob_store
+        if store is not None:
+            cached = store.get(file_hash)
+            if cached is not None:
+                return cached
+
         response = self._request(f"{FILES_URL}/{file_hash}", headers={RM_FILENAME_HEADER: filename})
         response.raise_for_status()
-        return response.content
+        data = response.content
+        # Blobs are addressed by the SHA-256 of their bytes. Anything else is a
+        # truncated or corrupted transfer and must not be used or cached.
+        if blob_hash(data) != file_hash:
+            raise RuntimeError(
+                f"Blob {filename} (hash={file_hash}) failed its hash check; not using it."
+            )
+        if store is not None:
+            store.put(file_hash, data)
+        return data
+
+    @property
+    def _blob_store(self):
+        if self._blob_store_arg is _USE_DEFAULT:
+            return get_default_store()
+        return self._blob_store_arg
+
+    @property
+    def _state_store(self):
+        if self._state_store_arg is _USE_DEFAULT:
+            from rm_mcp.index import get_instance
+
+            return get_instance()
+        return self._state_store_arg
 
     def _parse_index(self, content: bytes) -> List[Dict[str, Any]]:
         """Parse an index file into entries. See `parse_index`."""
@@ -389,73 +451,166 @@ class RemarkableClient:
 
         return root_data["hash"]
 
-    def _fetch_document_meta(self, entry: Dict[str, Any]) -> Optional[Document]:
-        """Fetch metadata for a single document entry.
+    # -----------------------------------------------------------------
+    # Incremental sync
+    # -----------------------------------------------------------------
 
-        Args:
-            entry: Index entry with hash, id, size keys
+    @property
+    def synced_root_hash(self) -> Optional[str]:
+        """Root hash the in-memory library fully reflects (None if incomplete)."""
+        return self._synced_root_hash
 
-        Returns:
-            Document if successful, None if skipped/failed
+    @property
+    def sync_complete(self) -> bool:
+        """False when the last sync could not fetch some documents."""
+        return self._synced_root_hash is not None
+
+    def _fetch_record(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        """Fetch one document's blob index and metadata. Raises on any failure.
+
+        A failure must not be papered over: a document returned without its
+        metadata would show up under its UUID, and one silently dropped would
+        look deleted.
         """
         doc_id = entry["id"]
-        doc_hash = entry["hash"]
+        files = self._parse_index(self._get_file(entry["hash"], _index_filename(doc_id)))
+        metadata: Dict[str, Any] = {}
+        for blob in files:
+            if blob["id"].endswith(".metadata"):
+                metadata = json.loads(self._get_file(blob["hash"], blob["id"]).decode("utf-8"))
+        return {"entry": dict(entry), "files": files, "metadata": metadata}
 
-        # Fetch the document's blob index
-        try:
-            blob_content = self._get_file(doc_hash, _index_filename(doc_id))
-            blob_entries = self._parse_index(blob_content)
-        except Exception:
-            logger.debug(
-                "Failed to fetch blob index for document %s (hash=%s)",
-                doc_id,
-                doc_hash,
-                exc_info=True,
-            )
-            return None
-
-        # Find and fetch the metadata file
-        metadata = {}
-        files = []
-
-        for blob_entry in blob_entries:
-            files.append(blob_entry)
-            if blob_entry["id"].endswith(".metadata"):
-                try:
-                    meta_content = self._get_file(blob_entry["hash"], blob_entry["id"])
-                    metadata = json.loads(meta_content.decode("utf-8"))
-                except Exception:
-                    logger.warning(
-                        "Failed to fetch/parse metadata for document %s (blob hash=%s)",
-                        doc_id,
-                        blob_entry["hash"],
-                    )
-
-        # Skip deleted documents
+    @staticmethod
+    def _document_from_record(record: Dict[str, Any], stale: bool) -> Optional[Document]:
+        """Build a Document from a sync record (None for deleted documents)."""
+        metadata = record.get("metadata") or {}
         if metadata.get("deleted", False):
             return None
+        entry = record["entry"]
 
-        # Parse last modified timestamp
         last_modified = None
         if "lastModified" in metadata:
             try:
-                ts = int(metadata["lastModified"]) / 1000  # Convert ms to seconds
+                ts = int(metadata["lastModified"]) / 1000  # ms to seconds
                 last_modified = datetime.fromtimestamp(ts, tz=timezone.utc)
             except (ValueError, TypeError):
                 pass
 
         return Document(
-            id=doc_id,
-            hash=doc_hash,
-            name=metadata.get("visibleName", doc_id),
+            id=entry["id"],
+            hash=entry["hash"],
+            name=metadata.get("visibleName", entry["id"]),
             doc_type=metadata.get("type", "DocumentType"),
             parent=metadata.get("parent", ""),
-            deleted=metadata.get("deleted", False),
+            deleted=False,
             pinned=metadata.get("pinned", False),
             last_modified=last_modified,
-            size=entry["size"],
-            files=files,
+            size=entry.get("size", 0),
+            files=list(record.get("files") or []),
+            stale=stale,
         )
+
+    def _load_state_once(self) -> None:
+        if self._state_loaded:
+            return
+        self._state_loaded = True
+        store = self._state_store
+        if store is None:
+            return
+        try:
+            root_hash, records = store.load_sync_state()
+        except Exception:
+            logger.warning("Could not load persisted sync state; doing a full sync", exc_info=True)
+            return
+        self._records = records
+        self._synced_root_hash = root_hash if records else None
+        self._rebuild_documents()
+
+    def _rebuild_documents(self) -> None:
+        documents = []
+        for doc_id, record in self._records.items():
+            doc = self._document_from_record(record, stale=doc_id in self._stale_ids)
+            if doc is not None:
+                documents.append(doc)
+        self._documents = documents
+        self._documents_by_id = {d.id: d for d in documents}
+
+    def _fetch_records(
+        self, entries: Iterable[Dict[str, Any]]
+    ) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+        """Fetch records in parallel. Returns (records by id, ids that failed)."""
+        fetched: Dict[str, Dict[str, Any]] = {}
+        failed: List[str] = []
+        with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as executor:
+            futures = {executor.submit(self._fetch_record, e): e for e in entries}
+            for future in as_completed(futures):
+                entry = futures[future]
+                try:
+                    fetched[entry["id"]] = future.result()
+                except Exception as e:
+                    failed.append(entry["id"])
+                    logger.warning(
+                        "Could not fetch document %s (hash=%s): %s",
+                        entry.get("id", "unknown"),
+                        entry.get("hash", "unknown"),
+                        e,
+                    )
+        return fetched, failed
+
+    def _sync_to(self, root_hash: str) -> None:
+        """Bring the library up to `root_hash`, fetching only what changed."""
+        try:
+            entries = self._parse_index(self._get_file(root_hash, ROOT_INDEX_FILENAME))
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse root index (hash={root_hash}): {e}") from e
+
+        current = {e["id"]: e for e in entries}
+        removed = [doc_id for doc_id in self._records if doc_id not in current]
+        changed = [
+            e
+            for e in entries
+            if self._records.get(e["id"], {}).get("entry", {}).get("hash") != e["hash"]
+        ]
+
+        fetched, failed = self._fetch_records(changed)
+
+        for doc_id in removed:
+            self._records.pop(doc_id, None)
+        replaced = [doc_id for doc_id in fetched if doc_id in self._records]
+        self._records.update(fetched)
+        # A document that failed keeps its previous version, marked stale. One
+        # with no previous version cannot be shown yet; it is retried next sync.
+        self._stale_ids = {doc_id for doc_id in failed if doc_id in self._records}
+        complete = not failed
+        self._synced_root_hash = root_hash if complete else None
+        self._rebuild_documents()
+
+        if failed:
+            logger.warning(
+                "Sync left %d document(s) at their previous version; will retry", len(failed)
+            )
+        logger.debug(
+            "Synced root %s: %d fetched, %d removed, %d unchanged",
+            root_hash,
+            len(fetched),
+            len(removed),
+            len(entries) - len(changed),
+        )
+
+        store = self._state_store
+        if store is None:
+            return
+        try:
+            store.save_sync_state(root_hash if complete else None, fetched, removed)
+        except Exception:
+            logger.warning("Could not persist sync state", exc_info=True)
+        # Searchable text of a changed document came from its old version.
+        if hasattr(store, "mark_document_version"):
+            for doc_id in replaced:
+                try:
+                    store.mark_document_version(doc_id, fetched[doc_id]["entry"]["hash"])
+                except Exception:
+                    logger.warning("Could not invalidate index for %s", doc_id, exc_info=True)
 
     def get_meta_items(
         self,
@@ -463,78 +618,27 @@ class RemarkableClient:
         root_hash: Optional[str] = None,
     ) -> List[Document]:
         """
-        Fetch documents and folders from the cloud.
+        Return the library's documents and folders, synced incrementally.
 
-        Uses parallel fetching with ThreadPoolExecutor for ~3-5x speedup
-        on large libraries (connection pooling + concurrent requests).
+        The root index lists every document with the hash of its current
+        version. Only documents whose hash differs from the last known state
+        (kept in memory and persisted in the index database) are fetched, so an
+        unchanged library costs one request and a single edit costs four: the
+        root pointer, the root index, the document's index and its metadata.
 
         Args:
-            limit: Maximum number of documents to fetch. If None, fetches all.
+            limit: Maximum number of documents to return. If None, returns all.
             root_hash: Pre-fetched root hash. If provided, skips the root hash
                 API call (avoids a duplicate request when the caller already has it).
-
-        Returns a list of Document objects (compatible with rmapy Collection).
         """
-        if root_hash is None:
-            # Fetch the root hash from the API
-            response = self._request(ROOT_URL)
-            response.raise_for_status()
-
-            # Handle empty or invalid JSON response
-            if not response.text or not response.text.strip():
-                raise RuntimeError(
-                    "Empty response from reMarkable API. Your token may have expired.\n"
-                    "Re-authenticate by running: uvx rm-mcp --setup"
-                )
-
-            try:
-                root_data = response.json()
-            except json.JSONDecodeError as e:
-                raise RuntimeError(
-                    f"Invalid JSON from reMarkable API: {e}\nResponse was: {response.text[:200]}"
-                )
-
-            if "hash" not in root_data:
-                raise RuntimeError(
-                    f"Unexpected API response format: {root_data}\n"
-                    "The reMarkable API may have changed."
-                )
-
-            root_hash = root_data["hash"]
-
-        # Get root index
-        try:
-            root_index = self._get_file(root_hash, ROOT_INDEX_FILENAME)
-            entries = self._parse_index(root_index)
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse root index (hash={root_hash}): {e}") from e
-
-        if limit is not None:
-            entries = entries[:limit]
-
-        # Fetch document metadata in parallel
-        documents = []
-        with ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS) as executor:
-            futures = {
-                executor.submit(self._fetch_document_meta, entry): entry for entry in entries
-            }
-            for future in as_completed(futures):
-                try:
-                    doc = future.result()
-                    if doc is not None:
-                        documents.append(doc)
-                except Exception:
-                    entry = futures[future]
-                    logger.warning(
-                        "Failed to fetch metadata for entry %s (hash=%s)",
-                        entry.get("id", "unknown"),
-                        entry.get("hash", "unknown"),
-                    )
-
-        self._documents = documents
-        self._documents_by_id = {d.id: d for d in documents}
-
-        return documents
+        with self._sync_lock:
+            if root_hash is None:
+                root_hash = self.get_root_hash()
+            self._load_state_once()
+            if root_hash != self._synced_root_hash:
+                self._sync_to(root_hash)
+            documents = list(self._documents)
+        return documents[:limit] if limit is not None else documents
 
     def get_doc(self, doc_id: str) -> Optional[Document]:
         """Get a document by ID."""
@@ -543,9 +647,11 @@ class RemarkableClient:
         return self._documents_by_id.get(doc_id)
 
     def download(self, doc: Document) -> bytes:
-        """Download a document's content as a zip file."""
-        # The document blob contains all the files
-        # We need to fetch each file and create a zip
+        """Download a document's content as a zip file.
+
+        Raises if any blob cannot be fetched: an archive with a page silently
+        missing reads as a document with less in it.
+        """
         import io
         import zipfile
 
@@ -555,21 +661,14 @@ class RemarkableClient:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for entry in blob_entries:
-                file_id = entry["id"]
-                file_hash = entry["hash"]
-
-                # Download the file
                 try:
-                    file_content = self._get_file(file_hash, file_id)
-                    zf.writestr(file_id, file_content)
-                except Exception:
-                    logger.warning(
-                        "Failed to download file %s (hash=%s) for document %s",
-                        file_id,
-                        file_hash,
-                        doc.id,
-                    )
-                    continue
+                    file_content = self._get_file(entry["hash"], entry["id"])
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to download {entry['id']} (hash={entry['hash']}) "
+                        f"for document {doc.id}: {e}"
+                    ) from e
+                zf.writestr(entry["id"], file_content)
 
         zip_buffer.seek(0)
         return zip_buffer.read()

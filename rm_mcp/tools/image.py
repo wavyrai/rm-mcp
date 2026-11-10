@@ -187,10 +187,15 @@ async def remarkable_image(
                     )
                     return [info, embedded]
             else:
-                # PNG format — check cache first. The key covers the document
-                # version, page, format and background, so a different
-                # background never serves another variant's render.
-                cache_key = _helpers.render_cache_key(target_doc, page, "png", background)
+                # PNG format — check cache first. The key covers the page's
+                # content hash (the document version for blank pages), format
+                # and background, so neither an edit nor a different
+                # background ever serves another variant's render.
+                page_hashes = await _helpers.run_blocking(_helpers.page_hashes, tmp_path)
+                page_hash = page_hashes[page - 1] if page <= len(page_hashes) else None
+                cache_key = _helpers.render_cache_key(
+                    target_doc, page, "png", background, page_hash=page_hash
+                )
                 cached_png = None if include_ocr else _helpers.get_rendered_image(cache_key)
                 if cached_png is not None:
                     png_base64 = cached_png

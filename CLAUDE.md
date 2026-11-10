@@ -19,8 +19,10 @@ rm_mcp/                   # Main package
   config.py               # Tolerant env var parsing (env_int/env_bool)
   models.py               # Document/Folder dataclasses
   paths.py                # Path utilities & root path filtering
-  index.py                # SQLite FTS5 full-text search index
+  index.py                # SQLite: FTS5 search, sync state, content-addressed OCR
   cache.py                # Multi-layer caching (memory → SQLite → Cloud)
+  blobstore.py            # Content-addressed on-disk blob cache (sha256, LRU, size cap)
+  library.py              # Stable-ID view: id → path, name, kind, hash, modified, pages
   resources.py            # MCP resource registration
   prompts.py              # MCP prompt templates
   capabilities.py         # Client capability detection
@@ -38,6 +40,7 @@ rm_mcp/                   # Main package
 tests/test_server.py      # Unit tests — mocked client, response shapes
 tests/test_integration.py # Integration tests — fake library, real index/ZIP/PDF
 tests/test_fixtures.py    # Extraction against tests/fixtures (make_fixtures.py)
+tests/test_sync.py        # Incremental sync, blob store, hash-keyed caches (fake cloud)
 setup.sh                  # One-line installer script
 server.json               # MCP Registry server definition
 server.py                 # Root-level backwards-compatible entry point
@@ -135,6 +138,8 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 | `REMARKABLE_MAX_OUTPUT_CHARS` | No | Max tool response size, default `50000` |
 | `REMARKABLE_PAGE_SIZE` | No | PDF/EPUB page size in chars, default `8000` |
 | `REMARKABLE_PARALLEL_WORKERS` | No | Parallel metadata fetch workers, default `5` |
+| `REMARKABLE_BLOB_CACHE_MB` | No | Blob store size cap in MB, default `500`; `0` disables it |
+| `REMARKABLE_BLOB_CACHE_DIR` | No | Blob store location, default `~/.cache/rm-mcp/blobs` |
 
 ## Code style
 
@@ -147,10 +152,17 @@ The `.mcpregistry_*` token files are gitignored — never commit them.
 
 These are invariants, not preferences — each one exists because breaking it caused a real bug.
 
-- **Tools must be `async def`.** FastMCP awaits sync tools inline on the event loop, so a sync tool blocks every other request for the duration of its network I/O. Wrap blocking work in `_helpers.run_blocking()`.
+- **Tools are `async def`, and blocking work goes through `_helpers.run_blocking()`.** In mcp SDK 2.x a plain `def` tool does not block the loop (MCPServer runs it on a worker thread), so this is for consistency, not correctness: every tool has one shape, `Context` calls such as sampling are awaitable, and which work runs off the loop is explicit. What does block the loop is synchronous I/O *inside* an `async def` tool; that is what `run_blocking()` is for.
 - **Never bypass the root filter.** Anything that returns document names, paths, or content must check `_is_within_root` against the live collection. The persistent index outlives config changes and deletions, so index hits are only trusted when the document is still visible in the current library.
 - **Don't swallow cache failures at `debug`.** A cache that fails silently looks identical to a slow one. L2 write failures log at `warning`.
-- **Every render/download cache key includes the document hash.** Keys without it serve stale content after a document changes; keys without background/format serve the wrong variant.
+- **Every derived-content cache key is the content hash of what it was derived from.** Never key by document ID or page number alone; that serves stale text after an edit. The scheme:
+  - Blobs (`blobstore.py`): the blob's sha256, the same hash the cloud addresses it by. Bytes are verified on every read and write, and a blob whose bytes don't match is never served.
+  - Page OCR (`cache.get_cached_page_ocr`, `index.page_ocr`): `(page_hash, backend)`, where `page_hash` is the sha256 of the page's `.rm` blob (`extract.get_page_hashes`). Editing one page invalidates only that page. No hash, no cache hit.
+  - Extraction results: `(doc_id, archive_content_hash)`, a hash over the archive's member names and their sha256.
+  - Renders: the page hash, plus format and background. Blank pages fall back to the document hash. Downloads are keyed by the document hash.
+  - Searchable pages (`pages`/FTS) are not a cache. They are tied to `documents.doc_hash` and cleared when sync sees a new version (`mark_document_version`).
+  Shared in-memory caches are written from worker threads, so each one has a lock.
+- **Sync is incremental and keeps what it can't refresh.** The client diffs the root index against the last known state (in memory and in `sync_documents` in the index DB) and fetches the blob index and metadata only for new or changed documents. If a document fails to fetch, it keeps its previous version (`Document.stale`), the sync is marked incomplete, and the next call retries it even when the root hash is unchanged. A fetch error never drops a known document (a new one that fails appears on the retry), and `download()` raises if any blob fails.
 - **Config comes from `config.env_int`/`env_bool`.** Bare `int(os.environ[...])` at import time turns a typo in a client config into an unexplained startup crash.
 - **`index.upsert_page`/`store_extraction_result` must ensure the parent row exists** — `pages` has a foreign key onto `documents`.
 

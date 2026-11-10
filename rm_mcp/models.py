@@ -35,6 +35,9 @@ class Document:
     # downloaded. The sync API does not currently report this, so it stays
     # True and `is_cloud_archived` rests on the trash check below.
     synced: bool = True
+    # True when the latest version could not be fetched and this is the
+    # previous one. The next sync retries it.
+    stale: bool = False
 
     @property
     def is_folder(self) -> bool:

@@ -19,9 +19,11 @@ from rm_mcp.extract.epub import extract_text_from_epub  # noqa: F401
 from rm_mcp.extract.notebook import (  # noqa: F401
     _get_ordered_rm_files,
     _safe_extractall,
+    archive_content_hash,
     extract_text_from_document_zip,
     extract_text_from_rm_file,
     get_document_page_count,
+    get_page_hashes,
 )
 from rm_mcp.extract.pdf import extract_text_from_pdf  # noqa: F401
 from rm_mcp.extract.render import (  # noqa: F401

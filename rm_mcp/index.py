@@ -7,13 +7,14 @@ Survives restarts and enables full-text content search across previously-read do
 DB location: ~/.cache/rm-mcp/index.db (override via REMARKABLE_INDEX_PATH env var)
 """
 
+import json
 import logging
 import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,26 @@ CREATE TABLE IF NOT EXISTS pages (
     indexed_at TEXT,
     PRIMARY KEY (doc_id, page_number, content_type),
     FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+);
+
+-- Last known library state, so a restart syncs incrementally. One row per
+-- document (or folder): the root-index hash of the version described by
+-- `record` (JSON: root entry, blob list, metadata). The root hash it was
+-- synced from lives in _meta under 'sync_root_hash'.
+CREATE TABLE IF NOT EXISTS sync_documents (
+    doc_id TEXT PRIMARY KEY,
+    entry_hash TEXT NOT NULL,
+    record TEXT NOT NULL
+);
+
+-- Content-addressed OCR cache: keyed by the hash of the page's .rm blob, so
+-- an edited page can never be answered with the text of its old strokes.
+CREATE TABLE IF NOT EXISTS page_ocr (
+    page_hash TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT,
+    PRIMARY KEY (page_hash, backend)
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
@@ -382,6 +403,99 @@ class DocumentIndex:
                 self._write_page(conn, doc_id, page_number, content_type, content, backend, now)
 
     # -----------------------------------------------------------------
+    # Content-addressed page OCR
+    # -----------------------------------------------------------------
+
+    def get_page_ocr_by_hash(self, page_hash: str, backend: str) -> Optional[str]:
+        """OCR text for exactly these page bytes, if it was ever transcribed."""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT content FROM page_ocr WHERE page_hash = ? AND backend = ?",
+            (page_hash, backend),
+        ).fetchone()
+        return row["content"] if row else None
+
+    def put_page_ocr_by_hash(self, page_hash: str, backend: str, content: str) -> None:
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO page_ocr (page_hash, backend, content, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (page_hash, backend, content, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def mark_document_version(self, doc_id: str, doc_hash: str) -> bool:
+        """Record that a known document now has a new version.
+
+        Clears its searchable pages if they came from another version, so search
+        stops matching text the document no longer contains. Documents the
+        index has never seen are left alone (no row is created here).
+
+        Returns:
+            True if stale pages were cleared.
+        """
+        conn = self._get_connection()
+        row = conn.execute("SELECT doc_hash FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
+        if row is None or row["doc_hash"] in (None, doc_hash):
+            return False
+        with conn:
+            conn.execute(
+                "DELETE FROM pages_fts WHERE rowid IN (SELECT rowid FROM pages WHERE doc_id = ?)",
+                (doc_id,),
+            )
+            conn.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
+            conn.execute("UPDATE documents SET doc_hash = ? WHERE doc_id = ?", (doc_hash, doc_id))
+        return True
+
+    # -----------------------------------------------------------------
+    # Sync state
+    # -----------------------------------------------------------------
+
+    def load_sync_state(self) -> Tuple[Optional[str], Dict[str, Dict[str, Any]]]:
+        """Return (root hash fully synced, {doc_id: record}) from the last run."""
+        conn = self._get_connection()
+        row = conn.execute("SELECT value FROM _meta WHERE key = 'sync_root_hash'").fetchone()
+        records: Dict[str, Dict[str, Any]] = {}
+        for r in conn.execute("SELECT doc_id, record FROM sync_documents").fetchall():
+            try:
+                records[r["doc_id"]] = json.loads(r["record"])
+            except ValueError:
+                logger.warning("Discarding unreadable sync record for %s", r["doc_id"])
+        return (row["value"] if row else None), records
+
+    def save_sync_state(
+        self,
+        root_hash: Optional[str],
+        upserts: Dict[str, Dict[str, Any]],
+        removed: Iterable[str],
+    ) -> None:
+        """Apply one sync's changes atomically.
+
+        Args:
+            root_hash: The root hash now fully reflected, or None when some
+                documents could not be fetched (forces a re-diff next time).
+            upserts: Records for documents fetched in this sync.
+            removed: IDs of documents no longer in the library.
+        """
+        conn = self._get_connection()
+        with conn:
+            for doc_id, record in upserts.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO sync_documents (doc_id, entry_hash, record) "
+                    "VALUES (?, ?, ?)",
+                    (doc_id, record["entry"]["hash"], json.dumps(record)),
+                )
+            for doc_id in removed:
+                conn.execute("DELETE FROM sync_documents WHERE doc_id = ?", (doc_id,))
+            if root_hash is None:
+                conn.execute("DELETE FROM _meta WHERE key = 'sync_root_hash'")
+            else:
+                conn.execute(
+                    "INSERT OR REPLACE INTO _meta (key, value) VALUES ('sync_root_hash', ?)",
+                    (root_hash,),
+                )
+
+    # -----------------------------------------------------------------
     # Search
     # -----------------------------------------------------------------
 
@@ -570,6 +684,7 @@ class DocumentIndex:
             conn.execute("DELETE FROM pages_fts")
             conn.execute("DELETE FROM pages")
             conn.execute("DELETE FROM documents")
+            conn.execute("DELETE FROM page_ocr")
         logger.info("Document index cleared")
 
     def close(self) -> None:

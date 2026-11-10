@@ -1530,10 +1530,13 @@ class TestRemarkableImageExtended:
             zf.writestr("doc-cached/page-id-1.rm", b"dummy rm data")
         mock_client.download.return_value = zip_buffer.getvalue()
 
-        # Pre-populate the image cache. The key covers document version,
-        # page, format and background so variants never collide.
+        # Pre-populate the image cache. The key covers the page's content
+        # hash, format and background so variants never collide.
+        import hashlib
+
         doc.hash = "doc-hash-1"
-        cache_key = render_cache_key(doc, 1, "png", get_background_color())
+        page_hash = hashlib.sha256(b"dummy rm data").hexdigest()
+        cache_key = render_cache_key(doc, 1, "png", get_background_color(), page_hash=page_hash)
         fake_base64 = "aVZCT1J3MEtHZ29BQQ=="  # fake base64 PNG data
         _rendered_image_cache[cache_key] = fake_base64
 
@@ -2814,7 +2817,7 @@ class TestCacheL2Integration:
         idx = index_mod.initialize(":memory:")
         try:
             idx.upsert_document(doc_id="doc-1", doc_hash="h1")
-            cache_page_ocr("doc-1", 1, "sampling", "OCR text from page 1")
+            cache_page_ocr("doc-1", 1, "sampling", "OCR text from page 1", page_hash="ph1")
 
             # Verify it was written to L2
             stored = idx.get_page_ocr("doc-1", 1, "sampling")
@@ -2834,21 +2837,21 @@ class TestCacheL2Integration:
         try:
             idx.upsert_document(doc_id="doc-1", doc_hash="h1")
             # Write directly to L2 (bypass L1)
-            idx.upsert_page("doc-1", 1, "L2 cached text", "ocr", "sampling")
+            idx.put_page_ocr_by_hash("ph1", "sampling", "L2 cached text")
 
             # Ensure L1 is empty for this key
-            cache_key = ("doc-1", 1, "sampling")
+            cache_key = ("ph1", "sampling")
             _page_ocr_cache.pop(cache_key, None)
 
             # Should find it via L2
-            result = get_cached_page_ocr("doc-1", 1, "sampling")
+            result = get_cached_page_ocr("doc-1", 1, "sampling", page_hash="ph1")
             assert result == "L2 cached text"
 
             # Should now be promoted to L1
             assert cache_key in _page_ocr_cache
         finally:
             # Clean up L1 cache
-            _page_ocr_cache.pop(("doc-1", 1, "sampling"), None)
+            _page_ocr_cache.pop(("ph1", "sampling"), None)
             index_mod.close()
             index_mod._instance = saved
 
@@ -2868,7 +2871,7 @@ class TestCacheL2Integration:
                 "handwritten_text": [],
                 "pages": 1,
             }
-            cache_ocr_result("doc-1", result)
+            cache_ocr_result("doc-1", "source-hash", result)
 
             # Verify typed text was stored in L2
             conn = idx._get_connection()

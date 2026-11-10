@@ -390,7 +390,7 @@ async def _load_documents_background(shutdown_event: asyncio.Event):
         # Publish the complete collection once. Publishing partial batches would
         # let a tool called during startup see — and then cache — a library that
         # is missing most of its documents.
-        set_cached_collection(client, items)
+        set_cached_collection(client, items, root_hash=getattr(client, "synced_root_hash", None))
 
         documents = [item for item in items if not item.is_folder]
         index = _get_index()

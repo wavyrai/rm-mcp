@@ -37,6 +37,7 @@ from rm_mcp.extract import (  # noqa: F401
     get_cached_ocr_result,
     get_cached_page_ocr,
     get_document_page_count,
+    get_page_hashes,
     render_page_from_document_zip,
     render_page_from_document_zip_svg,
 )
@@ -182,40 +183,69 @@ async def extract_document(client, doc, include_ocr: bool = False, include_sourc
     return await run_blocking(_work)
 
 
+def page_hashes(tmp_path) -> List:
+    """Per-page content hashes of a downloaded archive, or [] if unreadable.
+
+    An empty list only disables per-page caching for this call; nothing is
+    ever served from cache without a hash to match.
+    """
+    try:
+        return get_page_hashes(tmp_path)
+    except Exception:
+        logger.warning("Could not hash the pages of %s", tmp_path, exc_info=True)
+        return []
+
+
 # --- Caches ---
+#
+# These are written from worker threads (run_blocking) and read on the event
+# loop, so each is guarded by its own lock.
 
 _file_type_cache: "OrderedDict[str, str]" = OrderedDict()
 _MAX_FILE_TYPE_CACHE = 200
+_file_type_lock = threading.Lock()
 
-# Rendered pages, keyed by (doc hash, page, format, background) so that a
-# different background or format never serves another variant's render.
+# Rendered pages, keyed by content hash, format and background so that neither
+# an edit nor a different background ever serves another variant's render.
 # Bounded by total bytes, because a single page render can be several MB.
 _rendered_image_cache: "OrderedDict[str, str]" = OrderedDict()
 _MAX_RENDERED_IMAGE_BYTES = 64 * 1024 * 1024
+_rendered_image_lock = threading.Lock()
 
 
-def render_cache_key(doc, page: int, output_format: str, background: str) -> str:
-    """Build a cache key that captures everything the render depends on."""
+def render_cache_key(
+    doc, page: int, output_format: str, background: str, page_hash: str = None
+) -> str:
+    """Build a cache key that captures everything the render depends on.
+
+    A page renders from its own .rm blob only, so its hash is the precise key:
+    editing another page leaves this render cached. Without it (blank pages)
+    the document version stands in.
+    """
+    if page_hash:
+        return f"page:{page_hash}:{output_format}:{background}"
     version = getattr(doc, "hash", "") or ""
     return f"{doc.ID}:{version}:{page}:{output_format}:{background}"
 
 
 def get_rendered_image(key: str):
     """Return a cached render, marking it as most recently used."""
-    value = _rendered_image_cache.get(key)
-    if value is not None:
-        _rendered_image_cache.move_to_end(key)
-    return value
+    with _rendered_image_lock:
+        value = _rendered_image_cache.get(key)
+        if value is not None:
+            _rendered_image_cache.move_to_end(key)
+        return value
 
 
 def put_rendered_image(key: str, value: str) -> None:
     """Cache a render, evicting least-recently-used entries past the byte budget."""
-    _rendered_image_cache[key] = value
-    _rendered_image_cache.move_to_end(key)
-    total = sum(len(v) for v in _rendered_image_cache.values())
-    while total > _MAX_RENDERED_IMAGE_BYTES and len(_rendered_image_cache) > 1:
-        _, evicted = _rendered_image_cache.popitem(last=False)
-        total -= len(evicted)
+    with _rendered_image_lock:
+        _rendered_image_cache[key] = value
+        _rendered_image_cache.move_to_end(key)
+        total = sum(len(v) for v in _rendered_image_cache.values())
+        while total > _MAX_RENDERED_IMAGE_BYTES and len(_rendered_image_cache) > 1:
+            _, evicted = _rendered_image_cache.popitem(last=False)
+            total -= len(evicted)
 
 
 # Downloaded document archives, keyed by document version. Rendering five pages
@@ -261,7 +291,8 @@ def invalidate_after_write() -> None:
     from rm_mcp.cache import invalidate_collection_cache
 
     invalidate_collection_cache()
-    _file_type_cache.clear()
+    with _file_type_lock:
+        _file_type_cache.clear()
 
 
 def record_page_count(doc_id: str, page_count: int) -> None:
@@ -285,13 +316,15 @@ def record_page_count(doc_id: str, page_count: int) -> None:
 def _get_file_type_cached(client, doc) -> str:
     """Get file type with caching to avoid repeated lookups."""
     doc_id = doc.ID
-    if doc_id in _file_type_cache:
-        _file_type_cache.move_to_end(doc_id)
-        return _file_type_cache[doc_id]
+    with _file_type_lock:
+        if doc_id in _file_type_cache:
+            _file_type_cache.move_to_end(doc_id)
+            return _file_type_cache[doc_id]
     file_type = get_file_type(client, doc)
-    _file_type_cache[doc_id] = file_type
-    while len(_file_type_cache) > _MAX_FILE_TYPE_CACHE:
-        _file_type_cache.popitem(last=False)
+    with _file_type_lock:
+        _file_type_cache[doc_id] = file_type
+        while len(_file_type_cache) > _MAX_FILE_TYPE_CACHE:
+            _file_type_cache.popitem(last=False)
     return file_type
 
 

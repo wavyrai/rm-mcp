@@ -133,9 +133,17 @@ async def remarkable_read(
 
                     ocr_pages = [""] * total_notebook_pages
                     got_any = False
+                    # OCR is cached by the hash of each page's strokes, so an
+                    # edited page is transcribed again and the rest are reused.
+                    page_hashes = await _helpers.run_blocking(_helpers.page_hashes, tmp_path)
                     for target_page in wanted:
+                        page_hash = (
+                            page_hashes[target_page - 1]
+                            if target_page <= len(page_hashes)
+                            else None
+                        )
                         cached_text = _helpers.get_cached_page_ocr(
-                            target_doc.ID, target_page, "sampling"
+                            target_doc.ID, target_page, "sampling", page_hash=page_hash
                         )
                         if cached_text is not None:
                             ocr_pages[target_page - 1] = cached_text
@@ -150,7 +158,11 @@ async def remarkable_read(
                         ocr_text = await _helpers.ocr_via_sampling(ctx, png_data)
                         if ocr_text:
                             _helpers.cache_page_ocr(
-                                target_doc.ID, target_page, "sampling", ocr_text
+                                target_doc.ID,
+                                target_page,
+                                "sampling",
+                                ocr_text,
+                                page_hash=page_hash,
                             )
                             ocr_pages[target_page - 1] = ocr_text
                             got_any = True

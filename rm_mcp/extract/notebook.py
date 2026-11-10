@@ -5,6 +5,7 @@ Handles .rm file parsing, page ordering, zip extraction,
 and document text extraction.
 """
 
+import hashlib
 import json
 import logging
 import tempfile
@@ -112,6 +113,37 @@ def _get_ordered_rm_files(tmpdir_path: Path) -> List[Optional[Path]]:
     return rm_files
 
 
+def archive_content_hash(zip_path: Path) -> str:
+    """Content hash of a document archive: its member names and their bytes.
+
+    The archive's own bytes are not stable (zip entries carry write times), but
+    its members are the document's blobs, so hashing (name, sha256) pairs gives
+    the same key for the same document version however it was packed.
+    """
+    digest = hashlib.sha256()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for name in sorted(zf.namelist()):
+            digest.update(name.encode("utf-8") + b"\0")
+            digest.update(hashlib.sha256(zf.read(name)).digest())
+    return digest.hexdigest()
+
+
+def get_page_hashes(zip_path: Path) -> List[Optional[str]]:
+    """SHA-256 of each page's .rm blob, in page order (None for blank pages).
+
+    A page's .rm bytes are everything its render and its OCR depend on, so the
+    hash is the cache key for both: editing one page changes only its own key.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            _safe_extractall(zf, tmpdir_path)
+        return [
+            hashlib.sha256(f.read_bytes()).hexdigest() if f is not None else None
+            for f in _get_ordered_rm_files(tmpdir_path)
+        ]
+
+
 def get_document_page_count(zip_path: Path) -> int:
     """
     Get the number of pages in a reMarkable document zip.
@@ -200,11 +232,16 @@ def extract_text_from_document_zip(
     """
     from rm_mcp.cache import cache_ocr_result, get_cached_ocr_result
 
-    # Check cache if doc_id provided. A cached result that includes OCR can
-    # satisfy a no-OCR request, but not the other way around.
+    # Cached results are keyed by the archive's content hash, so an edited
+    # document misses instead of returning its old text. A cached result that
+    # includes OCR (or source text) can satisfy a request without it, but not
+    # the other way around.
+    source_hash = archive_content_hash(zip_path) if doc_id else None
     if doc_id:
-        cached = get_cached_ocr_result(doc_id, include_ocr=include_ocr)
-        if cached is not None and (cached.get("source_pages") or not include_source):
+        cached = get_cached_ocr_result(
+            doc_id, source_hash, include_ocr=include_ocr, include_source=include_source
+        )
+        if cached is not None:
             return cached
 
     result: Dict[str, Any] = {
@@ -295,6 +332,8 @@ def extract_text_from_document_zip(
     # Cache result if doc_id provided. Goes through cache_ocr_result so the
     # write-through to the persistent index happens here too.
     if doc_id:
-        cache_ocr_result(doc_id, result, include_ocr=include_ocr)
+        cache_ocr_result(
+            doc_id, source_hash, result, include_ocr=include_ocr, include_source=include_source
+        )
 
     return result
