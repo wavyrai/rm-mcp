@@ -10,6 +10,7 @@
     "name": "Thijs Verreck",
     "url": "https://github.com/wavyrai"
   },
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/wavyrai/rm-mcp"
@@ -18,13 +19,24 @@
   "documentation": "https://github.com/wavyrai/rm-mcp#readme",
   "support": "https://github.com/wavyrai/rm-mcp/issues",
   "license": "MIT",
-  "keywords": ["remarkable", "notes", "handwriting", "pdf", "tablet"],
+  "keywords": [
+    "remarkable",
+    "notes",
+    "handwriting",
+    "pdf",
+    "tablet"
+  ],
   "server": {
     "type": "uv",
     "entry_point": "src/server.py",
     "mcp_config": {
       "command": "uv",
-      "args": ["run", "--directory", "${__dirname}", "src/server.py"],
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "src/server.py"
+      ],
       "env": {
         "REMARKABLE_ONE_TIME_CODE": "${user_config.one_time_code}",
         "REMARKABLE_ROOT_PATH": "${user_config.root_path}",
@@ -33,16 +45,46 @@
     }
   },
   "tools": [
-    {"name": "remarkable_find", "description": "Search names, text, highlights and transcripts; filter by folder, type and date."},
-    {"name": "remarkable_list", "description": "List a folder's documents and subfolders."},
-    {"name": "remarkable_read", "description": "Read a document's text per page."},
-    {"name": "remarkable_view", "description": "See pages as images, handwriting included."},
-    {"name": "remarkable_annotations", "description": "Highlights and handwritten marks on PDFs and books."},
-    {"name": "remarkable_save_transcript", "description": "Save the text of a handwritten page so it is searchable."},
-    {"name": "remarkable_status", "description": "Connection, library size, index and settings."},
-    {"name": "remarkable_send", "description": "Put a PDF, EPUB, URL or Markdown on the tablet."},
-    {"name": "remarkable_organize", "description": "Rename, move and create folders as one batch; dry run by default."},
-    {"name": "remarkable_undo", "description": "Revert an applied organize batch."}
+    {
+      "name": "remarkable_find",
+      "description": "Search names, text, highlights and transcripts; filter by folder, type and date."
+    },
+    {
+      "name": "remarkable_list",
+      "description": "List a folder's documents and subfolders."
+    },
+    {
+      "name": "remarkable_read",
+      "description": "Read a document's text per page."
+    },
+    {
+      "name": "remarkable_view",
+      "description": "See pages as images, handwriting included."
+    },
+    {
+      "name": "remarkable_annotations",
+      "description": "Highlights and handwritten marks on PDFs and books."
+    },
+    {
+      "name": "remarkable_save_transcript",
+      "description": "Save the text of a handwritten page so it is searchable."
+    },
+    {
+      "name": "remarkable_status",
+      "description": "Connection, library size, index and settings."
+    },
+    {
+      "name": "remarkable_send",
+      "description": "Put a PDF, EPUB, URL or Markdown on the tablet."
+    },
+    {
+      "name": "remarkable_organize",
+      "description": "Rename, move and create folders as one batch; dry run by default."
+    },
+    {
+      "name": "remarkable_undo",
+      "description": "Revert an applied organize batch."
+    }
   ],
   "tools_generated": true,
   "user_config": {
@@ -70,7 +112,11 @@
     }
   },
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "python": ">=3.10"
     }
