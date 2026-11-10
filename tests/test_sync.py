@@ -271,7 +271,6 @@ class TestIncrementalSync:
         # ...and stays gone after a restart
         restarted = make_client(cloud, state, tmp_path).get_meta_items()
         assert "doc-0011" not in by_id(restarted)
-        assert client.get_doc("doc-0011") is None
 
     def test_transient_metadata_failure_keeps_the_previous_version(self, tmp_path, state):
         cloud = make_library(20)
@@ -506,7 +505,7 @@ class TestBlobStore:
 # =============================================================================
 
 
-def notebook_zip(pages: Dict[str, bytes], typed: Optional[str] = None) -> bytes:
+def notebook_zip(pages: Dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         zf.writestr(
@@ -514,8 +513,6 @@ def notebook_zip(pages: Dict[str, bytes], typed: Optional[str] = None) -> bytes:
         )
         for pid, data in pages.items():
             zf.writestr(f"doc/{pid}.rm", data)
-        if typed:
-            zf.writestr("doc/notes.txt", typed)
     return buffer.getvalue()
 
 
@@ -524,9 +521,9 @@ def fresh_index(tmp_path):
     saved = index_mod._instance
     index_mod._instance = None
     index = index_mod.initialize(str(tmp_path / "index.db"))
-    cache_mod.clear_extraction_cache()
+    cache_mod.clear_page_ocr_cache()
     yield index
-    cache_mod.clear_extraction_cache()
+    cache_mod.clear_page_ocr_cache()
     index_mod.close()
     index_mod._instance = saved
 
@@ -542,7 +539,7 @@ class TestHashKeyedCaches:
 
     def test_edited_page_ocr_is_not_served_after_restart(self, fresh_index):
         cache_mod.cache_page_ocr("doc", 1, "sampling", "old text", page_hash=sha(b"v1"))
-        cache_mod.clear_extraction_cache()  # drop L1, as a restart would
+        cache_mod.clear_page_ocr_cache()  # drop L1, as a restart would
 
         assert cache_mod.get_cached_page_ocr("doc", 1, "sampling", page_hash=sha(b"v2")) is None
         assert (
@@ -551,7 +548,7 @@ class TestHashKeyedCaches:
 
     def test_page_ocr_survives_edits_to_other_pages(self, fresh_index):
         cache_mod.cache_page_ocr("doc", 2, "sampling", "page two", page_hash=sha(b"p2"))
-        cache_mod.clear_extraction_cache()
+        cache_mod.clear_page_ocr_cache()
         # Page 1 was edited, page 2 was not: page 2 is still served.
         assert (
             cache_mod.get_cached_page_ocr("doc", 2, "sampling", page_hash=sha(b"p2")) == "page two"
@@ -563,32 +560,3 @@ class TestHashKeyedCaches:
         path = tmp_path / "a.zip"
         path.write_bytes(notebook_zip({"p1": b"first", "p2": b"second"}))
         assert get_page_hashes(path) == [sha(b"first"), sha(b"second")]
-
-    def test_edited_document_extraction_is_not_served(self, tmp_path, fresh_index):
-        from rm_mcp.extract.notebook import extract_text_from_document_zip
-
-        v1 = tmp_path / "v1.zip"
-        v1.write_bytes(notebook_zip({"p1": b"x"}, typed="first draft"))
-        v2 = tmp_path / "v2.zip"
-        v2.write_bytes(notebook_zip({"p1": b"x"}, typed="second draft"))
-
-        first = extract_text_from_document_zip(v1, doc_id="same-doc")
-        second = extract_text_from_document_zip(v2, doc_id="same-doc")
-
-        assert "first draft" in first["typed_text"]
-        assert "second draft" in second["typed_text"]
-
-    def test_unchanged_document_extraction_is_served_from_cache(
-        self, tmp_path, fresh_index, monkeypatch
-    ):
-        from rm_mcp.extract import notebook
-
-        v1 = tmp_path / "v1.zip"
-        v1.write_bytes(notebook_zip({"p1": b"x"}, typed="draft"))
-        notebook.extract_text_from_document_zip(v1, doc_id="d")
-
-        def boom(*args, **kwargs):
-            raise AssertionError("re-extracted an unchanged document")
-
-        monkeypatch.setattr(notebook, "_get_ordered_rm_files", boom)
-        assert "draft" in notebook.extract_text_from_document_zip(v1, doc_id="d")["typed_text"]

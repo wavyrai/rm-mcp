@@ -26,6 +26,11 @@ class LibraryEntry:
     modified: Optional[datetime]
     page_count: Optional[int]  # known once the document has been opened, else None
     stale: bool = False  # the latest version could not be fetched yet
+    parent: str = ""  # parent folder id; "" for the top level, "trash" when trashed
+
+    @property
+    def is_folder(self) -> bool:
+        return self.kind == "folder"
 
 
 def _known_page_count(doc_id: str) -> Optional[int]:
@@ -55,6 +60,7 @@ class Library:
                 modified=item.ModifiedClient,
                 page_count=None if item.is_folder else _known_page_count(item.ID),
                 stale=bool(getattr(item, "stale", False)),
+                parent=getattr(item, "Parent", "") or "",
             )
 
     def get(self, doc_id: str) -> Optional[LibraryEntry]:
@@ -76,10 +82,15 @@ _snapshot: Optional[tuple] = None  # (collection identity, Library)
 
 def get_library() -> Library:
     """The library for the current cached collection, rebuilt only when it changes."""
-    global _snapshot
     from rm_mcp.cache import get_cached_collection
 
     _client, collection = get_cached_collection()
+    return library_for(collection)
+
+
+def library_for(collection) -> Library:
+    """The library for this collection snapshot, built once per snapshot."""
+    global _snapshot
     with _snapshot_lock:
         if _snapshot is not None and _snapshot[0] is collection:
             return _snapshot[1]

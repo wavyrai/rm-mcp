@@ -41,84 +41,43 @@ class RemarkableMCP(MCPServer):
 
 def _build_instructions() -> str:
     """Build server instructions based on current configuration."""
-    from rm_mcp.ocr.sampling import get_ocr_backend
     from rm_mcp.paths import _get_root_path
 
     base = """# reMarkable MCP Server
 
-Access documents from your reMarkable tablet.
+Documents are addressed by a stable id (UUID). Paths and names are accepted and
+resolved, and every result carries the id: pass the id on.
 
 ## Reading (never changes anything)
 
-- `remarkable_browse(path)` - Browse folders (auto-redirects to read for documents)
-- `remarkable_read(document, page, pages, grep)` - Read document content
-- `remarkable_recent(limit)` - Get recently modified documents
-- `remarkable_search(query, grep, limit)` - Search by name and indexed content
-- `remarkable_status()` - Check connection and diagnose issues
-- `remarkable_image(document, page, include_ocr)` - Get a PNG image with optional OCR
+- `remarkable_find(query?, folder?, type?, modified_after?)` - search names, typed text,
+  PDF/EPUB text, highlights and saved transcripts; no query = recent documents
+- `remarkable_list(folder?, depth?, sort?)` - the folder tree with ids
+- `remarkable_read(id, pages="1-5")` - text per tablet page
+- `remarkable_view(id, pages="1")` - page images with the ink (max 4 per call)
+- `remarkable_annotations(id)` - highlights and pages with handwriting
+- `remarkable_status()` - connection, index and settings
+
+## Handwriting
+
+Handwritten pages have no text until someone reads them. remarkable_read marks
+them `handwriting: true, transcript: null`. Look at them with remarkable_view,
+then save what you read with `remarkable_save_transcript(id, page, text)`. It
+writes only to the local index; find and read include it from then on, until
+the page is edited on the tablet.
 
 ## Organising (changes the library's structure)
 
-- `remarkable_rename(item, new_name)` - Rename a document or folder
-- `remarkable_move(item, destination)` - Move an item into another folder
-- `remarkable_create_folder(path)` - Create a new folder
+- `remarkable_rename(item, new_name)`, `remarkable_move(item, destination)`,
+  `remarkable_create_folder(path)`
 
-These three change where things live and what they are called. They never
-delete anything and never touch a document's pages or annotations, and each
-one is reversible with the same tools. Confirm with the user before
-reorganising anything they did not explicitly ask you to.
+These never delete anything and never touch a document's pages. Confirm with
+the user before reorganising anything they did not explicitly ask you to.
 
-## Recommended Workflows
+## Resources
 
-### Finding and Reading Documents
-1. Use `remarkable_search("keyword")` to find documents by name or content
-2. Use `remarkable_read("Document Name")` to get content
-3. Use `remarkable_read("Document", pages="all")` to get complete content in one call
-4. Use `remarkable_read("Document", grep="pattern")` to search within a document
-
-Documents are addressed by name, or by full path when two share a name.
-PDFs and EPUBs return the document's own text plus your annotations;
-notebooks return typed text, and handwriting once OCR runs.
-
-### Getting Page Images
-Use `remarkable_image` when you need visual context:
-- Hand-drawn diagrams, sketches, or UI mockups
-- Content that text extraction might miss
-
-### Key Features
-- **Multi-page read**: Use `pages="all"` or `pages="1-3"` to get multiple pages in one call
-- **Grep auto-redirect**: grep automatically finds and returns the matching page
-- **Full-text search**: Reading a document indexes its content for future search
-- **Compact mode**: Use `compact_output=True` on any tool to omit hints and reduce response size
-- **Auto-OCR opt-out**: Use `auto_ocr=False` to skip automatic OCR on empty notebooks
-
-## MCP Resources
-
-Documents are registered as resources for direct access:
-- `remarkable:///{path}.txt` - Get full extracted text content in one request
-- `remarkableimg:///{path}.page-{N}.png` - Get PNG image of page N (notebooks only)
-"""
-
-    backend = get_ocr_backend()
-    if backend == "sampling":
-        base += """
-## OCR
-
-Handwriting OCR uses this client's own AI model via MCP sampling, so it needs
-no external API keys — but only when the client supports sampling. If it does
-not, notebooks return their typed text and OCR is skipped.
-
-Use `remarkable_read("Document", include_ocr=True)` for text, or
-`remarkable_image("Document", include_ocr=True)` for a page image plus its text.
-OCR runs per page and is cached, so `pages="all"` transcribes every page.
-"""
-    else:
-        base += f"""
-## OCR
-
-Disabled: REMARKABLE_OCR_BACKEND is set to '{backend}', and 'sampling' is the
-only supported backend. Handwritten pages return no text; use
-`remarkable_image()` to look at them directly.
+- `remarkable://doc/{id}` - a document's text, page by page
+- `remarkable://doc/{id}/page/{n}.png` - page n as an image
 """
 
     root = _get_root_path()
@@ -138,10 +97,7 @@ async def lifespan(app: MCPServer) -> AsyncIterator[None]:
     """Lifespan context manager for the MCP server."""
     # Initialize the persistent document index (L2 cache)
     from rm_mcp import index as _index_mod
-    from rm_mcp.resources import (
-        start_background_loader,
-        stop_background_loader,
-    )
+    from rm_mcp.loader import start_background_loader, stop_background_loader
 
     idx = _index_mod.initialize()
     if idx is not None:

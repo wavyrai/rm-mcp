@@ -14,7 +14,6 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
@@ -640,12 +639,6 @@ class RemarkableClient:
             documents = list(self._documents)
         return documents[:limit] if limit is not None else documents
 
-    def get_doc(self, doc_id: str) -> Optional[Document]:
-        """Get a document by ID."""
-        if not self._documents_by_id:
-            self.get_meta_items()
-        return self._documents_by_id.get(doc_id)
-
     def download(self, doc: Document) -> bytes:
         """Download a document's content as a zip file.
 
@@ -746,20 +739,3 @@ def load_client_from_token(token_data: str) -> RemarkableClient:
         f"Got {len(token_data)} characters that match neither shape.\n"
         "Re-authenticate by running: uvx rm-mcp --setup"
     )
-
-
-def load_client_from_file(token_file: Path = Path.home() / ".rmapi") -> RemarkableClient:
-    """
-    Load a client from a token file.
-
-    Args:
-        token_file: Path to JSON token file (default: ~/.rmapi)
-
-    Returns:
-        Configured RemarkableClient
-    """
-    if not token_file.exists():
-        raise RuntimeError(f"Token file not found: {token_file}\nRun: uvx rm-mcp --setup")
-
-    token_json = token_file.read_text()
-    return load_client_from_token(token_json)

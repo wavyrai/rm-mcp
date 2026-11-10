@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_DB_DIR = Path.home() / ".cache" / "rm-mcp"
 _DEFAULT_DB_PATH = _DEFAULT_DB_DIR / "index.db"
 
-_SCHEMA_VERSION = 1
+# 2: searchable rows are per tablet page ("page" text, "ocr" transcripts);
+# version 1 stored whole-document rows under page 0.
+_SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS _meta (
@@ -337,70 +339,33 @@ class DocumentIndex:
                 (row[0], doc_id, content),
             )
 
-    def get_page_ocr(
-        self, doc_id: str, page_number: int, backend: str = "sampling"
-    ) -> Optional[str]:
-        """Get stored OCR text for a specific page."""
-        conn = self._get_connection()
-        row = conn.execute(
-            """
-            SELECT content FROM pages
-            WHERE doc_id = ? AND page_number = ? AND content_type = 'ocr'
-            AND (ocr_backend = ? OR ocr_backend IS NULL)
-            """,
-            (doc_id, page_number, backend),
-        ).fetchone()
-        return row["content"] if row else None
-
-    def store_extraction_result(
+    def replace_document_pages(
         self,
         doc_id: str,
-        result: Dict[str, Any],
+        doc_hash: Optional[str],
+        pages: Iterable[Tuple[int, str, str]],
+        **metadata: Any,
     ) -> None:
-        """Store a full extraction result (typed text, highlights, OCR) as pages.
-
-        All writes are done in a single transaction for atomicity.
+        """Make one document version's pages the searchable ones, atomically.
 
         Args:
-            doc_id: Document ID
-            result: Extraction result dict with keys like typed_text, highlights,
-                    handwritten_text, pages, ocr_backend
+            doc_id: Document ID.
+            doc_hash: The version the pages were read from.
+            pages: (page_number, content_type, content) rows; content_type is
+                "page" for the page's own text or "ocr" for a saved transcript.
+            metadata: name, path, file_type, modified_at, page_count.
         """
-        ocr_backend = result.get("ocr_backend")
+        self.upsert_document(doc_id=doc_id, doc_hash=doc_hash, **metadata)
         conn = self._get_connection()
         now = datetime.now(timezone.utc).isoformat()
-
-        parts = []  # (page_number, content_type, content, ocr_backend)
-
-        typed_text = result.get("typed_text", [])
-        if typed_text:
-            parts.append((0, "typed_text", "\n\n".join(typed_text), None))
-
-        highlights = result.get("highlights", [])
-        if highlights:
-            parts.append((0, "highlight", "\n\n".join(highlights), None))
-
-        source_text = result.get("source_text")
-        if source_text and source_text.strip():
-            parts.append((0, "source_text", source_text, None))
-
-        # Handwritten text arrives as one entry per page, in page order — keep
-        # that granularity so get_page_ocr() can serve a single page later.
-        handwritten = result.get("handwritten_text") or []
-        for page_index, page_text in enumerate(handwritten, start=1):
-            if page_text and page_text.strip():
-                parts.append((page_index, "ocr", page_text, ocr_backend))
-
-        # Nothing to write — return before opening a transaction. Opening one
-        # and returning without committing would leave this connection holding
-        # the write lock, stalling every other thread's writes.
-        if not parts:
-            return
-
         with conn:
-            self._ensure_document_row(conn, doc_id)
-            for page_number, content_type, content, backend in parts:
-                self._write_page(conn, doc_id, page_number, content_type, content, backend, now)
+            conn.execute(
+                "DELETE FROM pages_fts WHERE rowid IN (SELECT rowid FROM pages WHERE doc_id = ?)",
+                (doc_id,),
+            )
+            conn.execute("DELETE FROM pages WHERE doc_id = ?", (doc_id,))
+            for page_number, content_type, content in pages:
+                self._write_page(conn, doc_id, page_number, content_type, content, None, now)
 
     # -----------------------------------------------------------------
     # Content-addressed page OCR
@@ -499,91 +464,39 @@ class DocumentIndex:
     # Search
     # -----------------------------------------------------------------
 
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Full-text search across indexed page content.
+    def search(self, query: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """Full-text search over indexed pages, best match first.
 
-        Uses FTS5 MATCH with bm25 ranking and snippet context.
-        Deduplicates by doc_id (keeps the best-ranked match per document).
-
-        Returns:
-            List of dicts with keys: doc_id, name, path, file_type, snippet, rank
+        Returns one row per matching page: doc_id, page_number, content_type
+        ("page" or "ocr"), snippet and rank. Callers must still check that the
+        document is visible in the current library.
         """
         conn = self._get_connection()
-        # Fetch more rows than needed to allow for dedup, but cap to avoid
-        # pulling the entire table into memory.
-        fetch_limit = limit * 5
         sql = """
             SELECT
-                d.doc_id,
-                d.name,
-                d.path,
-                d.file_type,
-                d.modified_at,
-                snippet(pages_fts, 1, '>>>', '<<<', '...', 40) AS snippet,
+                p.doc_id,
+                p.page_number,
+                p.content_type,
+                snippet(pages_fts, 1, '', '', '…', 16) AS snippet,
                 bm25(pages_fts) AS rank
             FROM pages_fts
-            JOIN documents d ON d.doc_id = pages_fts.doc_id
+            JOIN pages p ON p.rowid = pages_fts.rowid
             WHERE pages_fts.content MATCH ?
             ORDER BY rank
             LIMIT ?
             """
         try:
-            rows = conn.execute(sql, (query, fetch_limit)).fetchall()
+            rows = conn.execute(sql, (query, limit)).fetchall()
         except sqlite3.OperationalError:
             # Ordinary search terms are valid FTS5 syntax right up until they
-            # are not: a hyphen ("agent-based"), a dot, an apostrophe. Rather
-            # than silently returning nothing, retry the query as a quoted
-            # phrase, which treats it as literal text.
+            # are not: a hyphen ("agent-based"), a dot, an apostrophe. Retry the
+            # query as a quoted phrase, which treats it as literal text.
             phrase = '"' + query.replace('"', '""') + '"'
             try:
-                rows = conn.execute(sql, (phrase, fetch_limit)).fetchall()
+                rows = conn.execute(sql, (phrase, limit)).fetchall()
             except sqlite3.OperationalError:
                 return []
-
-        # Deduplicate by doc_id, keeping the best-ranked (first) match
-        seen: set = set()
-        results: List[Dict[str, Any]] = []
-        for row in rows:
-            doc_id = row["doc_id"]
-            if doc_id not in seen:
-                seen.add(doc_id)
-                results.append(dict(row))
-                if len(results) >= limit:
-                    break
-        return results
-
-    # -----------------------------------------------------------------
-    # Preview / snippet helpers
-    # -----------------------------------------------------------------
-
-    def get_preview(self, doc_id: str, max_chars: int = 200) -> Optional[str]:
-        """Get text preview from indexed pages. Prefers typed_text > highlight > ocr > source."""
-        conn = self._get_connection()
-        for content_type in ("typed_text", "highlight", "ocr", "source_text"):
-            row = conn.execute(
-                "SELECT content FROM pages WHERE doc_id = ? AND content_type = ? LIMIT 1",
-                (doc_id, content_type),
-            ).fetchone()
-            if row and row["content"]:
-                text = row["content"].strip()
-                if text:
-                    return text[:max_chars]
-        return None
-
-    def get_content_snippet(self, doc_id: str, max_chars: int = 2000) -> Optional[str]:
-        """Get concatenated content for search previews."""
-        conn = self._get_connection()
-        rows = conn.execute(
-            "SELECT content FROM pages WHERE doc_id = ? ORDER BY page_number, content_type",
-            (doc_id,),
-        ).fetchall()
-        if not rows:
-            return None
-        parts = [r["content"] for r in rows if r["content"]]
-        if not parts:
-            return None
-        combined = "\n\n".join(parts)
-        return combined[:max_chars]
+        return [dict(row) for row in rows]
 
     def get_page_count(self, doc_id: str) -> Optional[int]:
         """Get the stored page count for a document, if known."""
@@ -637,6 +550,15 @@ class DocumentIndex:
         row = conn.execute("SELECT 1 FROM pages WHERE doc_id = ? LIMIT 1", (doc_id,)).fetchone()
         return row is not None
 
+    def indexed_versions(self) -> Dict[str, Optional[str]]:
+        """doc_id -> indexed version hash, for every document with searchable pages."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT d.doc_id, d.doc_hash FROM documents d "
+            "WHERE EXISTS (SELECT 1 FROM pages p WHERE p.doc_id = d.doc_id)"
+        ).fetchall()
+        return {row["doc_id"]: row["doc_hash"] for row in rows}
+
     def get_indexed_document_count(self) -> int:
         """Count documents that have at least one indexed page."""
         conn = self._get_connection()
@@ -667,24 +589,17 @@ class DocumentIndex:
             "index_path": self._db_path,
         }
 
-    def rebuild(self) -> None:
-        """Rebuild the FTS index from the pages table."""
-        conn = self._get_connection()
-        with conn:
-            conn.execute("DELETE FROM pages_fts")
-            conn.execute(
-                "INSERT INTO pages_fts(rowid, doc_id, content) "
-                "SELECT rowid, doc_id, content FROM pages"
-            )
-
     def clear(self) -> None:
-        """Clear all indexed data."""
+        """Clear all indexed data, except saved transcripts (page_ocr).
+
+        Transcripts are work an agent did and cannot be rebuilt from the
+        cloud; they are keyed by page content, so they reattach on re-index.
+        """
         conn = self._get_connection()
         with conn:
             conn.execute("DELETE FROM pages_fts")
             conn.execute("DELETE FROM pages")
             conn.execute("DELETE FROM documents")
-            conn.execute("DELETE FROM page_ocr")
         logger.info("Document index cleared")
 
     def close(self) -> None:

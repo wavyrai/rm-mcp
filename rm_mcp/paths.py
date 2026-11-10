@@ -5,8 +5,7 @@ Root path filtering, item path building, document lookup, and fuzzy matching.
 """
 
 import os
-from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 # --- Root path utilities ---
 
@@ -83,17 +82,6 @@ def get_items_by_id(collection) -> Dict[str, Any]:
     return {item.ID: item for item in collection}
 
 
-def get_items_by_parent(collection) -> Dict[str, List]:
-    """Build a lookup dict of items grouped by parent ID."""
-    items_by_parent: Dict[str, List] = {}
-    for item in collection:
-        parent = item.Parent if hasattr(item, "Parent") else ""
-        if parent not in items_by_parent:
-            items_by_parent[parent] = []
-        items_by_parent[parent].append(item)
-    return items_by_parent
-
-
 def get_item_path(item, items_by_id: Dict[str, Any]) -> str:
     """Get the full path of an item."""
     path_parts = [item.VissibleName]
@@ -107,107 +95,3 @@ def get_item_path(item, items_by_id: Dict[str, Any]) -> str:
         path_parts.insert(0, parent.VissibleName)
         parent_id = parent.Parent if hasattr(parent, "Parent") else ""
     return "/" + "/".join(path_parts)
-
-
-# --- Document lookup helper ---
-
-
-def _find_document(document: str, collection, items_by_id: Dict[str, Any], root: str):
-    """Find a document by name or path in the collection.
-
-    Args:
-        document: Document name or path to find (already resolved to actual path)
-        collection: List of all items
-        items_by_id: ID-to-item mapping
-        root: Root path filter
-
-    Returns:
-        Tuple of (target_doc, doc_path) if found, or (None, error_json_str) if not found.
-    """
-    from rm_mcp.responses import make_error
-
-    documents = [item for item in collection if not item.is_folder]
-    target_doc = None
-    document_lower = document.lower().strip("/")
-
-    # A full-path match is unambiguous and always wins over a bare-name match,
-    # which may hit several documents in different folders.
-    path_matches = []
-    name_matches = []
-
-    for doc in documents:
-        # Skip trashed documents
-        if getattr(doc, "Parent", "") == "trash":
-            continue
-        doc_path = get_item_path(doc, items_by_id)
-        # Filter by root path
-        if not _is_within_root(doc_path, root):
-            continue
-        if doc_path.lower().strip("/") == document_lower:
-            path_matches.append((doc, doc_path))
-        elif doc.VissibleName.lower() == document_lower:
-            name_matches.append((doc, doc_path))
-
-    if path_matches:
-        target_doc = path_matches[0][0]
-    elif len(name_matches) == 1:
-        target_doc = name_matches[0][0]
-    elif len(name_matches) > 1:
-        # Several documents share this name — picking one silently would read
-        # the wrong document, so ask for the full path instead.
-        paths = sorted(_apply_root_filter(p, root) for _doc, p in name_matches)
-        error = make_error(
-            error_type="ambiguous_document",
-            message=(
-                f"{len(name_matches)} documents are named '{document}'. "
-                "Use a full path to choose one."
-            ),
-            suggestion=f"For example: remarkable_read('{paths[0]}')",
-            did_you_mean=paths,
-        )
-        return None, error
-
-    if not target_doc:
-        # Find similar documents for suggestion (only within root)
-        filtered_docs = [
-            doc
-            for doc in documents
-            if getattr(doc, "Parent", "") != "trash"
-            and _is_within_root(get_item_path(doc, items_by_id), root)
-        ]
-        # Use the original user-provided document name for suggestions
-        similar = find_similar_documents(document, filtered_docs)
-        search_term = document.split()[0] if document else "notes"
-        error = make_error(
-            error_type="document_not_found",
-            message=f"Document not found: '{document}'",
-            suggestion=(
-                f"Try remarkable_browse(query='{search_term}') to search, "
-                "or remarkable_browse('/') to list all files."
-            ),
-            did_you_mean=similar if similar else None,
-        )
-        return None, error
-
-    doc_path = get_item_path(target_doc, items_by_id)
-    return target_doc, doc_path
-
-
-# --- Fuzzy matching ---
-
-
-def find_similar_documents(query: str, documents: List, limit: int = 5) -> List[str]:
-    """Find documents with similar names for 'did you mean' suggestions."""
-    query_lower = query.lower()
-    scored = []
-    for doc in documents:
-        name = doc.VissibleName
-        # Use sequence matcher for fuzzy matching
-        ratio = SequenceMatcher(None, query_lower, name.lower()).ratio()
-        # Boost partial matches
-        if query_lower in name.lower():
-            ratio += 0.3
-        scored.append((name, ratio))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [name for name, score in scored[:limit] if score > 0.3]

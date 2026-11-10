@@ -1,548 +1,63 @@
 """
-MCP Resources for reMarkable tablet access.
+MCP resource templates, resolved live against the current library:
 
-Provides:
-- remarkable:///{path}.txt - extracted text from any document
-- remarkableimg:///{path}.page-{page}.png - page image for notebooks (PNG)
-- remarkablesvg:///{path}.page-{page}.svg - page image for notebooks (SVG vector)
+- remarkable://doc/{id}             the document's text, page by page (text/plain)
+- remarkable://doc/{id}/page/{n}.png  tablet page n as an opaque PNG
 
-Resources are loaded in background batches via the cloud API.
-Respects REMARKABLE_ROOT_PATH environment variable for folder filtering.
+Nothing is registered per document at startup; a template read looks the id
+up in the current collection, so renames, moves and edits show immediately.
 """
 
-import asyncio
-import logging
-from typing import Optional, Set
-
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.types import Completion, ResourceTemplateReference
 
-from rm_mcp.config import env_bool
-from rm_mcp.paths import _apply_root_filter, _get_root_path, _is_within_root
+from rm_mcp import reader
 from rm_mcp.server import mcp
-
-logger = logging.getLogger(__name__)
-
-
-# Background loader state
-_registered_docs: Set[str] = set()  # Track document IDs for text resources
-_registered_img: Set[str] = set()  # Track document IDs for image resources
-_registered_uris: Set[str] = set()  # Track URIs for collision detection
-_img_uri_to_doc: dict[str, tuple] = {}  # Map image URI template -> (client, doc) for page count
-
-# How many times to retry the initial library fetch before giving up
-_MAX_FETCH_ATTEMPTS = 3
-
-# Page suggestions offered before a document's real page count is known
-_DEFAULT_COMPLETION_PAGES = 10
-
-# Content indexing: documents above this size are skipped (they are loaded
-# fully into memory to extract), and this pause between documents keeps the
-# background pass polite to both the API and the event loop.
-_MAX_CONTENT_INDEX_BYTES = 100 * 1024 * 1024
-_CONTENT_INDEX_PAUSE_SECONDS = 1.0
+from rm_mcp.tools._helpers import run_blocking
 
 
-def _file_type_for(doc) -> str:
-    """Classify a document by its blobs (falls back to the name)."""
-    from rm_mcp.api import get_file_type
-
-    return get_file_type(None, doc)
-
-
-def _get_index():
-    """Get the persistent index, or None when it is unavailable."""
+async def _resolve(func, *args):
     try:
-        from rm_mcp.index import get_instance
+        return await run_blocking(func, *args)
+    except ToolError as e:
+        raise ResourceNotFoundError(str(e)) from None
+
+
+@mcp.resource(
+    "remarkable://doc/{id}",
+    name="document-text",
+    title="reMarkable document text",
+    description="Every tablet page's text and saved transcripts, by document id.",
+    mime_type="text/plain",
+)
+async def document_text(id: str) -> str:
+    return await _resolve(reader.document_text, id)
+
+
+@mcp.resource(
+    "remarkable://doc/{id}/page/{n}.png",
+    name="document-page",
+    title="reMarkable page image",
+    description="Tablet page n of a document as a PNG on paper colour, ink included.",
+    mime_type="image/png",
+)
+async def document_page(id: str, n: str) -> bytes:
+    if not n.isdigit():
+        raise ResourceNotFoundError(f"Page '{n}' is not a page number; use 1, 2, 3, ...")
+    return await _resolve(reader.page_png, id, int(n))
 
-        return get_instance()
-    except Exception:
-        logger.debug("Document index unavailable", exc_info=True)
-        return None
 
-
-def _make_doc_resource(client, document):
-    """Create a resource function for a document.
-
-    Returns only user-supplied content: typed text, annotations, highlights.
-    Does NOT include original PDF/EPUB text.
-
-    Note: OCR is not available for resources (sampling OCR requires async Context).
-    Use the remarkable_read tool with include_ocr=True for OCR.
-    """
-    from rm_mcp.extract import extract_text_from_document_zip
-    from rm_mcp.tools._helpers import _temp_document, download_document
-
-    def doc_resource() -> str:
-        try:
-            text_parts = []
-
-            # Download notebook data for annotations/typed text/handwritten
-            raw = download_document(client, document)
-            with _temp_document(raw) as tmp_path:
-                # First try without OCR (faster) - use doc_id to leverage cache
-                content = extract_text_from_document_zip(
-                    tmp_path, include_ocr=False, doc_id=document.ID
-                )
-
-                if content["typed_text"]:
-                    text_parts.extend(content["typed_text"])
-                if content["highlights"]:
-                    if text_parts:
-                        text_parts.append("\n--- Highlights ---")
-                    text_parts.extend(content["highlights"])
-
-                return "\n\n".join(text_parts) if text_parts else "(No user content)"
-        except Exception as e:
-            return f"Error: {e}"
-
-    return doc_resource
-
-
-def _make_image_resource(client, document):
-    """Create a resource function for page images from a notebook.
-
-    Returns a function that takes a page number and returns PNG bytes.
-    Uses the standard reMarkable background color for resources (configurable via env).
-    """
-    from rm_mcp.extract import get_background_color, render_page_from_document_zip
-    from rm_mcp.tools._helpers import _temp_document, download_document
-
-    def image_resource(page: str) -> bytes:
-        try:
-            page_num = int(page)
-            if page_num < 1:
-                raise ValueError("Page number must be >= 1")
-        except ValueError as e:
-            raise ValueError(f"Invalid page number: {page}") from e
-
-        raw_doc = download_document(client, document)
-        with _temp_document(raw_doc) as tmp_path:
-            # Use reMarkable standard background color for resources
-            png_data = render_page_from_document_zip(
-                tmp_path, page_num, background_color=get_background_color()
-            )
-            if png_data is None:
-                raise RuntimeError(f"Failed to render page {page_num}; see the server log.")
-            return png_data
-
-    return image_resource
-
-
-def _make_svg_resource(client, document):
-    """Create a resource function for SVG page images from a notebook.
-
-    Returns a function that takes a page number and returns SVG content.
-    Uses the standard reMarkable background color for resources (configurable via env).
-    """
-    from rm_mcp.extract import (
-        get_background_color,
-        render_page_from_document_zip_svg,
-    )
-    from rm_mcp.tools._helpers import _temp_document, download_document
-
-    def svg_resource(page: str) -> str:
-        try:
-            page_num = int(page)
-            if page_num < 1:
-                raise ValueError("Page number must be >= 1")
-        except ValueError as e:
-            raise ValueError(f"Invalid page number: {page}") from e
-
-        raw_doc = download_document(client, document)
-        with _temp_document(raw_doc) as tmp_path:
-            # Use reMarkable standard background color for resources
-            svg_content = render_page_from_document_zip_svg(
-                tmp_path, page_num, background_color=get_background_color()
-            )
-            if svg_content is None:
-                raise RuntimeError(f"Failed to render page {page_num} to SVG; see the server log.")
-            return svg_content
-
-    return svg_resource
-
-
-def _register_document(client, doc, items_by_id=None, root: str = "/") -> bool:
-    """Register a single document as resources.
-
-    Registers:
-    - Text resource for all documents
-    - Image template resource for notebooks (not PDF/EPUB)
-
-    Args:
-        client: The reMarkable API client
-        doc: Document metadata object
-        items_by_id: Dict mapping IDs to items for path resolution
-        root: Root path filter (documents outside root are skipped)
-    """
-    global _registered_docs, _registered_img, _registered_uris
-
-    doc_id = doc.ID
-
-    # Skip if already registered (by ID)
-    if doc_id in _registered_docs:
-        return False
-
-    # Skip cloud-archived documents (not available on device)
-    if hasattr(doc, "is_cloud_archived") and doc.is_cloud_archived:
-        return False
-
-    # Get the full path
-    doc_name = doc.VissibleName
-    if items_by_id:
-        from rm_mcp.paths import get_item_path
-
-        full_path = get_item_path(doc, items_by_id)
-    else:
-        full_path = f"/{doc_name}"
-
-    # Filter by root path
-    if not _is_within_root(full_path, root):
-        return False
-
-    # Apply root filter for display paths (e.g., /Work/Project -> /Project)
-    display_path = _apply_root_filter(full_path, root)
-
-    # Use the filtered path for URIs
-    uri_path = display_path.lstrip("/")
-
-    # Register text resource (use /// for empty netloc)
-    base_uri = f"remarkable:///{uri_path}.txt"
-    counter = 1
-    final_uri = base_uri
-    display_name = f"{display_path}.txt"
-    while final_uri in _registered_uris:
-        final_uri = f"remarkable:///{uri_path}_{counter}.txt"
-        display_name = f"{display_path} ({counter}).txt"
-        counter += 1
-
-    desc = f"Content from '{display_path}'"
-    if doc.ModifiedClient:
-        desc += f" (modified: {doc.ModifiedClient})"
-
-    mcp.resource(final_uri, name=display_name, description=desc, mime_type="text/plain")(
-        _make_doc_resource(client, doc)
-    )
-
-    _registered_docs.add(doc_id)
-    _registered_uris.add(final_uri)
-
-    # Register image template resources for notebooks only (not PDF/EPUB)
-    if _file_type_for(doc) == "notebook":
-        # PNG resource template with {page} parameter
-        img_uri = f"remarkableimg:///{uri_path}.page-{{page}}.png"
-        img_counter = 1
-        final_img_uri = img_uri
-        img_display = f"{display_path} (page image)"
-        while final_img_uri in _registered_uris:
-            final_img_uri = f"remarkableimg:///{uri_path}_{img_counter}.page-{{page}}.png"
-            img_display = f"{display_path} ({img_counter}) (page image)"
-            img_counter += 1
-
-        img_desc = f"PNG image of page from notebook '{display_path}'"
-        if doc.ModifiedClient:
-            img_desc += f" (modified: {doc.ModifiedClient})"
-
-        mcp.resource(
-            final_img_uri,
-            name=img_display,
-            description=img_desc,
-            mime_type="image/png",
-        )(_make_image_resource(client, doc))
-
-        _registered_img.add(doc_id)
-        _registered_uris.add(final_img_uri)
-
-        # Store mapping for completion handler to look up page counts
-        _img_uri_to_doc[final_img_uri] = (client, doc)
-
-        # SVG resource template with {page} parameter
-        svg_uri = f"remarkablesvg:///{uri_path}.page-{{page}}.svg"
-        svg_counter = 1
-        final_svg_uri = svg_uri
-        svg_display = f"{display_path} (SVG)"
-        while final_svg_uri in _registered_uris:
-            final_svg_uri = f"remarkablesvg:///{uri_path}_{svg_counter}.page-{{page}}.svg"
-            svg_display = f"{display_path} ({svg_counter}) (SVG)"
-            svg_counter += 1
-
-        svg_desc = f"SVG vector image of page from notebook '{display_path}'"
-        if doc.ModifiedClient:
-            svg_desc += f" (modified: {doc.ModifiedClient})"
-
-        mcp.resource(
-            final_svg_uri,
-            name=svg_display,
-            description=svg_desc,
-            mime_type="image/svg+xml",
-        )(_make_svg_resource(client, doc))
-
-        _registered_uris.add(final_svg_uri)
-
-        # Store mapping for SVG completions too
-        _img_uri_to_doc[final_svg_uri] = (client, doc)
-
-    return True
-
-
-async def _index_document_content(client, candidates, shutdown_event: asyncio.Event):
-    """Download and index the text of PDFs and EPUBs that are not searchable yet.
-
-    Runs after registration so it never delays startup, one document at a time
-    with a pause between them. Extraction goes through the shared cache layer,
-    whose write-through stores the text in the persistent index — the same path
-    a read through the tool takes, so the two can never disagree.
-
-    Smallest documents first: coverage grows fastest that way, and an
-    interrupted pass resumes where it left off because indexed documents are
-    filtered out on the next startup.
-    """
-    from rm_mcp.tools._helpers import extract_document
-
-    skipped_large = [c for c in candidates if c.size and c.size > _MAX_CONTENT_INDEX_BYTES]
-    todo = sorted(
-        (c for c in candidates if c not in skipped_large),
-        key=lambda d: d.size or 0,
-    )
-    for doc in skipped_large:
-        logger.info(
-            "Content indexing skipped '%s': %d MB exceeds the %d MB limit",
-            doc.VissibleName,
-            doc.size // (1024 * 1024),
-            _MAX_CONTENT_INDEX_BYTES // (1024 * 1024),
-        )
-
-    if not todo:
-        return
-
-    logger.info("Content indexing: %d document(s) to make searchable", len(todo))
-    done = failed = 0
-    for doc in todo:
-        if shutdown_event.is_set():
-            logger.info(
-                "Content indexing stopped by shutdown (%d/%d done; resumes next start)",
-                done,
-                len(todo),
-            )
-            return
-        try:
-            await extract_document(client, doc, include_ocr=False)
-            index = _get_index()
-            if index is not None and not index.has_indexed_content(doc.ID):
-                # No text layer at all (a scan, an image-only PDF). Record an
-                # empty marker so the next startup does not download it again.
-                index.upsert_page(doc.ID, 0, "", "no_text")
-            done += 1
-        except Exception:
-            failed += 1
-            logger.warning("Content indexing failed for '%s'", doc.VissibleName, exc_info=True)
-        await asyncio.sleep(_CONTENT_INDEX_PAUSE_SECONDS)
-
-    logger.info("Content indexing complete: %d indexed, %d failed", done, failed)
-
-
-async def _load_documents_background(shutdown_event: asyncio.Event):
-    """
-    Background task to load and register documents in batches.
-
-    Respects REMARKABLE_ROOT_PATH environment variable.
-    """
-    try:
-        from rm_mcp.api import get_rmapi
-        from rm_mcp.cache import set_cached_collection
-        from rm_mcp.paths import get_item_path, get_items_by_id
-
-        client = get_rmapi()
-        loop = asyncio.get_event_loop()
-
-        root = _get_root_path()
-        if root != "/":
-            logger.info(f"Root path filter: {root}")
-
-        # Fetch the whole library once. Fetching in growing slices would re-read
-        # every document's metadata on each pass — quadratic in requests for a
-        # library that fits in a single fetch.
-        items = None
-        for attempt in range(1, _MAX_FETCH_ATTEMPTS + 1):
-            if shutdown_event.is_set():
-                logger.info("Background document loader cancelled by shutdown")
-                return
-            try:
-                items = await loop.run_in_executor(None, client.get_meta_items)
-                break
-            except Exception as e:
-                logger.warning(f"Error fetching documents (attempt {attempt}): {e}")
-                if attempt == _MAX_FETCH_ATTEMPTS:
-                    logger.error(f"Background loader stopping after {_MAX_FETCH_ATTEMPTS} attempts")
-                    return
-                await asyncio.sleep(2**attempt)
-
-        if not items:
-            logger.info("Background loader: library is empty")
-            return
-
-        items_by_id = get_items_by_id(items)
-
-        # Publish the complete collection once. Publishing partial batches would
-        # let a tool called during startup see — and then cache — a library that
-        # is missing most of its documents.
-        set_cached_collection(client, items, root_hash=getattr(client, "synced_root_hash", None))
-
-        documents = [item for item in items if not item.is_folder]
-        index = _get_index()
-        indexed_ids = set()
-        content_candidates = []  # PDFs/EPUBs whose text is not yet searchable
-
-        registered_count = 0
-        for position, doc in enumerate(documents, 1):
-            if shutdown_event.is_set():
-                logger.info("Background document loader cancelled by shutdown")
-                break
-
-            full_path = get_item_path(doc, items_by_id)
-            within_root = _is_within_root(full_path, root)
-
-            try:
-                if _register_document(client, doc, items_by_id, root=root):
-                    registered_count += 1
-            except Exception as e:
-                logger.debug(f"Failed to register document '{doc.VissibleName}': {e}")
-
-            # Index metadata for searchable documents only. Indexing documents
-            # outside the root would make them reachable through content search,
-            # defeating the root filter.
-            if index is not None and within_root:
-                try:
-                    doc_hash = getattr(doc, "hash", None)
-                    # Check for stale content BEFORE upserting
-                    # (upsert overwrites the hash, making comparison impossible)
-                    if doc_hash and index.needs_reindex(doc.ID, str(doc_hash)):
-                        logger.debug(f"Document '{doc.VissibleName}' needs re-indexing")
-                    index.upsert_document(
-                        doc_id=doc.ID,
-                        doc_hash=str(doc_hash) if doc_hash else None,
-                        name=doc.VissibleName,
-                        path=full_path,
-                        file_type=_file_type_for(doc),
-                        modified_at=(
-                            doc.ModifiedClient.isoformat() if doc.ModifiedClient else None
-                        ),
-                    )
-                    indexed_ids.add(doc.ID)
-                    # PDFs and EPUBs can be made searchable without the client:
-                    # their text is in the archive. Notebooks need the client's
-                    # model for OCR, so they are indexed as they are read.
-                    if _file_type_for(doc) in ("pdf", "epub") and not index.has_indexed_content(
-                        doc.ID
-                    ):
-                        content_candidates.append(doc)
-                except Exception:
-                    logger.debug("Index metadata write failed", exc_info=True)
-
-            # Yield control periodically so tool calls stay responsive.
-            if position % 25 == 0:
-                await asyncio.sleep(0)
-
-        # Drop content for documents that are gone or no longer in scope, so a
-        # deleted note stops turning up in search results.
-        if index is not None and not shutdown_event.is_set():
-            try:
-                await loop.run_in_executor(None, index.prune_missing, indexed_ids)
-            except Exception:
-                logger.debug("Index prune failed", exc_info=True)
-
-        logger.info(
-            f"Background loader complete: {registered_count} documents registered"
-            + (f" (filtered to {root})" if root != "/" else "")
-        )
-
-        # Second pass: make PDF/EPUB text searchable before anything has been
-        # read through a tool. Opt out with REMARKABLE_INDEX_CONTENT=0.
-        if index is not None and content_candidates and env_bool("REMARKABLE_INDEX_CONTENT", True):
-            await _index_document_content(client, content_candidates, shutdown_event)
-
-    except asyncio.CancelledError:
-        logger.info("Background document loader cancelled")
-        raise
-    except Exception as e:
-        logger.warning(f"Background document loader error: {e}")
-
-
-def start_background_loader() -> Optional[asyncio.Task]:
-    """Start the background document loader task. Returns the task."""
-    shutdown_event = asyncio.Event()
-
-    try:
-        task = asyncio.create_task(_load_documents_background(shutdown_event))
-        # Store the event on the task so we can access it later
-        task.shutdown_event = shutdown_event  # type: ignore[attr-defined]
-        logger.info("Started background document loader")
-        return task
-    except Exception as e:
-        logger.warning(f"Could not start background loader: {e}")
-        return None
-
-
-async def stop_background_loader(task: Optional[asyncio.Task]):
-    """Stop the background document loader task."""
-    if task is None:
-        return
-
-    # Signal shutdown via event
-    if hasattr(task, "shutdown_event"):
-        task.shutdown_event.set()
-
-    # Cancel and wait
-    if not task.done():
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    logger.info("Stopped background document loader")
-
-
-# Completion handler for resource templates
 @mcp.completion()
 async def handle_completion(ref, argument, context):
-    """Provide completions for resource template parameters.
+    """Page numbers for remarkable://doc/{id}/page/{n}.png, from the indexed page count."""
+    if not isinstance(ref, ResourceTemplateReference) or argument.name != "n":
+        return None
+    doc_id = (context.arguments or {}).get("id") if context is not None else None
+    count = 10
+    if doc_id:
+        from rm_mcp.index import get_instance
 
-    Currently handles:
-    - remarkableimg:// page parameter: looks up actual page count for the document
-    - remarkablesvg:// page parameter: looks up actual page count for the document
-    """
-    if isinstance(ref, ResourceTemplateReference):
-        uri = ref.uri if hasattr(ref, "uri") else str(ref)
-
-        # Handle page completions for image resources (PNG and SVG)
-        is_img = uri.startswith("remarkableimg://") and argument.name == "page"
-        is_svg = uri.startswith("remarkablesvg://") and argument.name == "page"
-
-        if is_img or is_svg:
-            # Extract any partial value the user has typed
-            partial = argument.value or ""
-
-            # Completion fires on every keystroke, so this must stay cheap:
-            # take the page count from the index, and otherwise offer a
-            # reasonable range rather than downloading the document to count.
-            page_count = _DEFAULT_COMPLETION_PAGES
-            entry = _img_uri_to_doc.get(uri)
-            if entry is not None:
-                _client, doc = entry
-                index = _get_index()
-                if index is not None:
-                    try:
-                        known = index.get_page_count(doc.ID)
-                        if known:
-                            page_count = known
-                    except Exception:
-                        logger.debug("Page count lookup failed for completion", exc_info=True)
-
-            # Suggest page numbers up to the known count
-            suggestions = [str(i) for i in range(1, page_count + 1)]
-            if partial:
-                suggestions = [s for s in suggestions if s.startswith(partial)]
-
-            return Completion(values=suggestions[:10], has_more=len(suggestions) > 10)
-
-    return None
+        index = get_instance()
+        count = (index.get_page_count(doc_id) if index is not None else None) or count
+    values = [str(i) for i in range(1, count + 1) if str(i).startswith(argument.value or "")]
+    return Completion(values=values[:100], has_more=len(values) > 100)

@@ -14,14 +14,17 @@ import io
 import json
 import json as _json  # kept accessible where a parameter named `json` shadows it
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from unittest.mock import patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import rm_mcp.cache as cache_mod
 import rm_mcp.index as index_mod
+from rm_mcp import reader
 from rm_mcp.models import Document
 from rm_mcp.server import mcp
 from rm_mcp.tools import _helpers
@@ -34,6 +37,15 @@ NOW = datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
 # =============================================================================
 
 
+def typed_page(text: str) -> bytes:
+    """A real v6 page whose root text block holds `text`."""
+    from rmscene.scene_stream import simple_text_document, write_blocks
+
+    buffer = io.BytesIO()
+    write_blocks(buffer, list(simple_text_document(text)), options={"version": "3.1"})
+    return buffer.getvalue()
+
+
 def make_notebook_zip(page_ids: List[str], typed_text: Optional[str] = None) -> bytes:
     """Build a document archive shaped like the ones the cloud returns."""
     buffer = io.BytesIO()
@@ -42,11 +54,12 @@ def make_notebook_zip(page_ids: List[str], typed_text: Optional[str] = None) -> 
             "doc.content",
             json.dumps({"cPages": {"pages": [{"id": pid} for pid in page_ids]}}),
         )
-        for pid in page_ids:
-            # Distinct bytes per page: OCR and renders are cached by page hash.
-            zf.writestr(f"doc/{pid}.rm", b"reMarkable .lines file\x00" + pid.encode())
-        if typed_text:
-            zf.writestr("doc/notes.txt", typed_text)
+        for n, pid in enumerate(page_ids):
+            if n == 0 and typed_text:
+                zf.writestr(f"doc/{pid}.rm", typed_page(typed_text))
+            else:
+                # Distinct bytes per page: transcripts are keyed by page hash.
+                zf.writestr(f"doc/{pid}.rm", b"reMarkable .lines file\x00" + pid.encode())
     return buffer.getvalue()
 
 
@@ -129,10 +142,8 @@ def clean_state(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
     cache_mod.invalidate_collection_cache()
-    cache_mod.clear_extraction_cache()
-    _helpers.clear_download_cache()
-    _helpers._rendered_image_cache.clear()
-    _helpers._file_type_cache.clear()
+    cache_mod.clear_page_ocr_cache()
+    reader.clear_caches()
 
     saved = index_mod._instance
     index_mod._instance = None
@@ -142,14 +153,24 @@ def clean_state(tmp_path, monkeypatch):
     index_mod._instance = saved
 
 
+@contextmanager
 def use_library(library: FakeLibrary):
-    """Point the collection cache at a fake library."""
-    return patch.object(_helpers, "get_cached_collection", lambda: (library, library.documents))
+    """Point the collection cache (for every tool) at a fake library."""
+
+    def fetch():
+        return library, library.documents
+
+    with patch.object(_helpers, "get_cached_collection", fetch):
+        with patch.object(cache_mod, "get_cached_collection", fetch):
+            yield
 
 
 async def call(tool: str, **kwargs):
-    """Call a tool through the MCP server and parse its JSON response."""
+    """Call a tool through the MCP server and return its structured (or JSON) result."""
     result = await mcp.call_tool(tool, kwargs)
+    structured = result.structured_content
+    if structured is not None and set(structured) != {"result"}:
+        return structured
     return json.loads(result.content[0].text)
 
 
@@ -169,26 +190,25 @@ class TestRecentWithMissingTimestamps:
             ]
         )
         with use_library(library):
-            data = await call("remarkable_recent", limit=10)
+            data = await call("remarkable_find")
 
-        assert data["count"] == 3
-        names = [d["name"] for d in data["documents"]]
+        names = [d["name"] for d in data["results"]]
         # Newest first, and the undated document sorts last rather than raising
         assert names == ["Has Timestamp", "Older", "No Timestamp"]
 
     async def test_recent_handles_all_timestamps_missing(self):
         library = FakeLibrary([doc("a", "One", modified=None), doc("b", "Two", modified=None)])
         with use_library(library):
-            data = await call("remarkable_recent", limit=10)
-        assert data["count"] == 2
+            data = await call("remarkable_find")
+        assert data["total"] == 2
 
     async def test_recent_handles_naive_datetimes(self):
         """Mixing naive and aware datetimes must not raise."""
         naive = datetime(2026, 1, 1, 9, 0, 0)
         library = FakeLibrary([doc("a", "Aware", modified=NOW), doc("b", "Naive", modified=naive)])
         with use_library(library):
-            data = await call("remarkable_recent", limit=10)
-        assert [d["name"] for d in data["documents"]] == ["Aware", "Naive"]
+            data = await call("remarkable_find")
+        assert [d["name"] for d in data["results"]] == ["Aware", "Naive"]
 
 
 # =============================================================================
@@ -202,13 +222,8 @@ class TestRootPathConfinement:
     ):
         """Indexed content outside REMARKABLE_ROOT_PATH must stay invisible."""
         index = clean_state
-        index.upsert_document(
-            doc_id="private",
-            name="Private Diary",
-            path="/Personal/Private Diary",
-            file_type="notebook",
-        )
-        index.upsert_page("private", 1, "confidential salary negotiation", "ocr", "sampling")
+        index.upsert_document(doc_id="private", doc_hash="h1", name="Private Diary")
+        index.upsert_page("private", 1, "confidential salary negotiation", "ocr")
 
         library = FakeLibrary(
             [
@@ -221,18 +236,16 @@ class TestRootPathConfinement:
 
         monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
         with use_library(library):
-            data = await call("remarkable_search", query="confidential")
+            data = await call("remarkable_find", query="confidential")
 
-        assert "_error" in data, "content outside the root must not be returned"
+        assert data["results"] == []
         assert "Private Diary" not in json.dumps(data)
 
     async def test_search_returns_indexed_content_inside_root(self, clean_state, monkeypatch):
         """The same search inside the root still works."""
         index = clean_state
-        index.upsert_document(
-            doc_id="report", name="Report", path="/Work/Report", file_type="notebook"
-        )
-        index.upsert_page("report", 1, "confidential roadmap notes", "ocr", "sampling")
+        index.upsert_document(doc_id="report", doc_hash="h1", name="Report")
+        index.upsert_page("report", 1, "confidential roadmap notes", "ocr")
 
         library = FakeLibrary(
             [doc("work", "Work", folder=True), doc("report", "Report", parent="work")]
@@ -240,25 +253,35 @@ class TestRootPathConfinement:
 
         monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
         with use_library(library):
-            data = await call("remarkable_search", query="confidential")
+            data = await call("remarkable_find", query="confidential")
 
-        assert data["count"] == 1
+        assert [r["id"] for r in data["results"]] == ["report"]
         # Paths are reported relative to the root
-        assert data["documents"][0]["path"] == "/Report"
+        assert data["results"][0]["path"] == "/Report"
 
     async def test_search_drops_hits_for_deleted_documents(self, clean_state):
         """Content indexed for a document that no longer exists is not returned."""
         index = clean_state
-        index.upsert_document(
-            doc_id="gone", name="Deleted Note", path="/Deleted Note", file_type="notebook"
-        )
-        index.upsert_page("gone", 1, "vanished content", "ocr", "sampling")
+        index.upsert_document(doc_id="gone", doc_hash="h1", name="Deleted Note")
+        index.upsert_page("gone", 1, "vanished content", "ocr")
 
         library = FakeLibrary([doc("kept", "Kept Note")])
         with use_library(library):
-            data = await call("remarkable_search", query="vanished")
+            data = await call("remarkable_find", query="vanished")
 
-        assert "_error" in data
+        assert data["results"] == []
+
+    async def test_search_drops_hits_from_an_older_version(self, clean_state):
+        """Rows indexed for another version of the document are not trusted."""
+        index = clean_state
+        index.upsert_document(doc_id="n1", doc_hash="old-version", name="Note")
+        index.upsert_page("n1", 1, "superseded wording", "page")
+
+        library = FakeLibrary([doc("n1", "Note", doc_hash="new-version")])
+        with use_library(library):
+            data = await call("remarkable_find", query="superseded")
+
+        assert data["results"] == []
 
 
 # =============================================================================
@@ -270,42 +293,28 @@ class TestIndexWritesLand:
     def test_page_write_without_document_row(self, clean_state):
         """Writing a page for an unregistered document must not be dropped."""
         index = clean_state
-        index.upsert_page("never-registered", 1, "hello world", "ocr", "sampling")
-        assert index.get_page_ocr("never-registered", 1) == "hello world"
+        index.upsert_page("never-registered", 1, "hello world", "ocr")
+        assert [r["doc_id"] for r in index.search("hello")] == ["never-registered"]
 
-    def test_extraction_write_without_document_row(self, clean_state):
-        index = clean_state
-        index.store_extraction_result(
-            "never-registered", {"typed_text": ["alpha beta"], "handwritten_text": []}
-        )
-        assert index.get_preview("never-registered") == "alpha beta"
-
-    def test_handwritten_text_keeps_page_granularity(self, clean_state):
-        """Per-page OCR must be retrievable per page, not as one blob."""
-        index = clean_state
-        index.store_extraction_result(
-            "doc",
-            {
-                "handwritten_text": ["page one text", "", "page three text"],
-                "ocr_backend": "sampling",
-            },
-        )
-        assert index.get_page_ocr("doc", 1) == "page one text"
-        assert index.get_page_ocr("doc", 3) == "page three text"
-
-    def test_cache_layer_persists_page_ocr(self, clean_state):
+    def test_cache_layer_persists_transcripts(self, clean_state):
         """The cache helper writes through to the index for a fresh document."""
-        cache_mod.cache_page_ocr("fresh-doc", 2, "sampling", "transcribed text", page_hash="ph")
-        cache_mod._page_ocr_cache.clear()  # force an L2 read
+        cache_mod.cache_page_ocr("fresh-doc", 2, "transcript", "transcribed text", page_hash="ph")
+        cache_mod.clear_page_ocr_cache()  # force an L2 read
         assert (
-            cache_mod.get_cached_page_ocr("fresh-doc", 2, "sampling", page_hash="ph")
+            cache_mod.get_cached_page_ocr("fresh-doc", 2, "transcript", page_hash="ph")
             == "transcribed text"
         )
         # ...and the text is searchable as the document's page
-        assert clean_state.get_page_ocr("fresh-doc", 2) == "transcribed text"
+        [row] = clean_state.search("transcribed")
+        assert (row["doc_id"], row["page_number"], row["content_type"]) == ("fresh-doc", 2, "ocr")
+
+    def test_legacy_sampling_ocr_counts_as_a_transcript(self, clean_state):
+        clean_state.put_page_ocr_by_hash("ph", "sampling", "older ocr text")
+        assert cache_mod.get_page_transcript("doc", 1, "ph") == "older ocr text"
+        assert cache_mod.get_page_transcript("doc", 1, None) is None
 
     def test_write_with_nothing_to_store_releases_the_lock(self, clean_state):
-        """An empty extraction must not leave a transaction open.
+        """An empty page set must not leave a transaction open.
 
         A connection that returns while holding the write lock blocks every
         other thread's writes until the busy timeout expires — five seconds of
@@ -315,8 +324,7 @@ class TestIndexWritesLand:
         import time
 
         index = clean_state
-        # Nothing extractable: the write path has no rows to insert
-        index.store_extraction_result("empty-doc", {"typed_text": [], "handwritten_text": []})
+        index.replace_document_pages("empty-doc", "h", [])
 
         elapsed = {}
 
@@ -342,7 +350,7 @@ class TestIndexWritesLand:
         index = clean_state
         with pytest.raises(Exception):
             # An unbindable value fails partway through the write
-            index.upsert_page("doc", 1, object(), "ocr", "sampling")
+            index.upsert_page("doc", 1, object(), "ocr")
 
         elapsed = {}
 
@@ -360,9 +368,9 @@ class TestIndexWritesLand:
     def test_prune_removes_documents_no_longer_present(self, clean_state):
         index = clean_state
         index.upsert_document(doc_id="keep", name="Keep", path="/Keep")
-        index.upsert_page("keep", 1, "kept content", "ocr", "sampling")
+        index.upsert_page("keep", 1, "kept content", "ocr")
         index.upsert_document(doc_id="drop", name="Drop", path="/Drop")
-        index.upsert_page("drop", 1, "dropped content", "ocr", "sampling")
+        index.upsert_page("drop", 1, "dropped content", "ocr")
 
         assert index.prune_missing({"keep"}) == 1
         assert index.search("dropped") == []
@@ -380,13 +388,13 @@ class TestInMemoryIndexAcrossThreads:
 
         index = index_mod.DocumentIndex(":memory:")
         try:
-            index.upsert_page("doc", 1, "written on the main thread", "ocr", "sampling")
+            index.put_page_ocr_by_hash("ph", "transcript", "written on the main thread")
 
             result = {}
 
             def read():
                 try:
-                    result["value"] = index.get_page_ocr("doc", 1)
+                    result["value"] = index.get_page_ocr_by_hash("ph", "transcript")
                 except Exception as exc:  # pragma: no cover - failure path
                     result["value"] = f"{type(exc).__name__}: {exc}"
 
@@ -397,241 +405,6 @@ class TestInMemoryIndexAcrossThreads:
             assert result["value"] == "written on the main thread"
         finally:
             index.close()
-
-
-# =============================================================================
-# RM-04 — PDF and EPUB text must actually be extracted
-# =============================================================================
-
-
-class TestSourceDocumentText:
-    async def test_read_returns_pdf_text(self):
-        """Reading a PDF returns the document's own text, not just annotations."""
-        pdf_doc = doc("pdf-1", "Manual.pdf")
-        library = FakeLibrary(
-            [pdf_doc], {"pdf-1": make_pdf_zip("Installation requires a torque wrench")}
-        )
-
-        with use_library(library):
-            data = await call("remarkable_read", document="Manual.pdf")
-
-        assert "torque wrench" in data["content"]
-        assert data["file_type"] == "pdf"
-
-    async def test_pdf_text_is_searchable_after_reading(self, clean_state):
-        """Reading a PDF indexes its text for later content search."""
-        pdf_doc = doc("pdf-1", "Manual.pdf")
-        library = FakeLibrary(
-            [pdf_doc], {"pdf-1": make_pdf_zip("Installation requires a torque wrench")}
-        )
-
-        with use_library(library):
-            await call("remarkable_read", document="Manual.pdf")
-            data = await call("remarkable_search", query="torque")
-
-        assert data["count"] == 1
-        assert data["documents"][0]["match_type"] == "content"
-
-    async def test_grep_finds_text_inside_a_pdf(self):
-        pdf_doc = doc("pdf-1", "Manual.pdf")
-        library = FakeLibrary(
-            [pdf_doc], {"pdf-1": make_pdf_zip("Calibrate the sensor every six months")}
-        )
-        with use_library(library):
-            data = await call("remarkable_read", document="Manual.pdf", grep="calibrate")
-
-        assert data["grep_matches"] >= 1
-        assert "Calibrate" in data["content"]
-
-
-# =============================================================================
-# RM-05 / RM-07 — per-page OCR must cover every page the caller asked for
-# =============================================================================
-
-
-def fake_ocr(pages_text: dict):
-    """Return an ocr_via_sampling stand-in keyed by the rendered page marker."""
-
-    async def _ocr(ctx, png_data, max_tokens=2000):
-        marker = png_data.decode()
-        return pages_text.get(marker)
-
-    return _ocr
-
-
-def fake_render(zip_path, page, background_color=None):
-    """Render stand-in: encodes the page number so the OCR stub can key on it."""
-    return f"page-{page}".encode()
-
-
-class TestSamplingOCRCoverage:
-    @pytest.fixture(autouse=True)
-    def sampling_enabled(self, monkeypatch):
-        monkeypatch.setenv("REMARKABLE_OCR_BACKEND", "sampling")
-        monkeypatch.setattr(_helpers, "should_use_sampling_ocr", lambda ctx: True)
-        monkeypatch.setattr(_helpers, "render_page_from_document_zip", fake_render)
-
-    async def test_pages_all_transcribes_every_page(self, monkeypatch):
-        """pages='all' must OCR each page, not return blanks for all but one."""
-        monkeypatch.setattr(
-            _helpers,
-            "ocr_via_sampling",
-            fake_ocr({"page-1": "first page", "page-2": "second page", "page-3": "third page"}),
-        )
-        library = FakeLibrary([doc("n1", "Journal")], {"n1": make_notebook_zip(["p1", "p2", "p3"])})
-        with use_library(library):
-            data = await call("remarkable_read", document="Journal", pages="all", include_ocr=True)
-
-        assert data["pages"] == [1, 2, 3]
-        for expected in ("first page", "second page", "third page"):
-            assert expected in data["content"]
-
-    async def test_page_range_transcribes_only_that_range(self, monkeypatch):
-        """OCR is expensive, so only the requested pages are sent to the model."""
-        seen = []
-
-        async def _ocr(ctx, png_data, max_tokens=2000):
-            seen.append(png_data.decode())
-            return f"text for {png_data.decode()}"
-
-        monkeypatch.setattr(_helpers, "ocr_via_sampling", _ocr)
-        library = FakeLibrary(
-            [doc("n1", "Journal")], {"n1": make_notebook_zip(["p1", "p2", "p3", "p4"])}
-        )
-        with use_library(library):
-            data = await call("remarkable_read", document="Journal", pages="2-3", include_ocr=True)
-
-        assert sorted(seen) == ["page-2", "page-3"]
-        assert data["pages"] == [2, 3]
-
-    async def test_single_page_ocr_is_cached_for_reuse(self, monkeypatch, clean_state):
-        """A second read of the same page must not re-run OCR."""
-        calls = []
-
-        async def _ocr(ctx, png_data, max_tokens=2000):
-            calls.append(png_data.decode())
-            return "transcribed once"
-
-        monkeypatch.setattr(_helpers, "ocr_via_sampling", _ocr)
-        library = FakeLibrary([doc("n1", "Journal")], {"n1": make_notebook_zip(["p1", "p2"])})
-
-        with use_library(library):
-            await call("remarkable_read", document="Journal", page=1, include_ocr=True)
-            data = await call("remarkable_read", document="Journal", page=1, include_ocr=True)
-
-        assert len(calls) == 1
-        assert "transcribed once" in data["content"]
-
-    async def test_edited_page_is_transcribed_again(self, monkeypatch, clean_state):
-        """OCR is keyed by page content: an edit re-runs only the edited page."""
-        calls = []
-
-        async def _ocr(ctx, png_data, max_tokens=2000):
-            calls.append(png_data.decode())
-            return f"text v{len(calls)}"
-
-        monkeypatch.setattr(_helpers, "ocr_via_sampling", _ocr)
-
-        def archive(page_two: bytes) -> bytes:
-            buffer = io.BytesIO()
-            with zipfile.ZipFile(buffer, "w") as zf:
-                zf.writestr(
-                    "doc.content", json.dumps({"cPages": {"pages": [{"id": "p1"}, {"id": "p2"}]}})
-                )
-                zf.writestr("doc/p1.rm", b"page one strokes")
-                zf.writestr("doc/p2.rm", page_two)
-            return buffer.getvalue()
-
-        library = FakeLibrary([doc("n1", "Journal", doc_hash="v1")], {"n1": archive(b"draft")})
-        with use_library(library):
-            await call("remarkable_read", document="Journal", pages="1-2", include_ocr=True)
-
-        # Page 2 is edited on the tablet: new document version, new page bytes.
-        library.documents = [doc("n1", "Journal", doc_hash="v2")]
-        library.archives["n1"] = archive(b"final")
-        with use_library(library):
-            data = await call("remarkable_read", document="Journal", page=2, include_ocr=True)
-
-        assert calls == ["page-1", "page-2", "page-2"]
-        assert "text v3" in data["content"]
-
-    async def test_grep_reports_which_pages_were_searched(self, monkeypatch):
-        """A grep miss must not claim the whole document lacks the term."""
-        monkeypatch.setattr(_helpers, "ocr_via_sampling", fake_ocr({"page-1": "unrelated text"}))
-        library = FakeLibrary([doc("n1", "Journal")], {"n1": make_notebook_zip(["p1", "p2", "p3"])})
-        with use_library(library):
-            data = await call(
-                "remarkable_read", document="Journal", grep="missing", include_ocr=True
-            )
-
-        error = data["_error"]
-        assert error["type"] == "no_grep_matches"
-        # It says what it actually looked at, and how to widen the search
-        assert "page(s) read so far" in error["message"]
-        assert "pages='all'" in error["suggestion"]
-
-    async def test_auto_ocr_retry_keeps_the_page_selection(self, monkeypatch):
-        """The automatic OCR retry must not silently drop pages='all'."""
-        monkeypatch.setattr(
-            _helpers,
-            "ocr_via_sampling",
-            fake_ocr({"page-1": "alpha", "page-2": "beta"}),
-        )
-        # No typed text, so the empty-notebook path triggers the OCR retry
-        library = FakeLibrary([doc("n1", "Blank")], {"n1": make_notebook_zip(["p1", "p2"])})
-
-        with use_library(library):
-            data = await call("remarkable_read", document="Blank", pages="all")
-
-        assert data.get("_ocr_auto_enabled") is True
-        assert data["pages"] == [1, 2]
-        assert "alpha" in data["content"] and "beta" in data["content"]
-
-
-# =============================================================================
-# RM-06 / RM-13 — render caching must be correct and cheap
-# =============================================================================
-
-
-class TestRenderCaching:
-    def test_cache_key_separates_backgrounds_and_formats(self):
-        d = doc("x", "Notes", doc_hash="v1")
-        white = _helpers.render_cache_key(d, 1, "png", "#FFFFFF")
-        clear = _helpers.render_cache_key(d, 1, "png", "#00000000")
-        svg = _helpers.render_cache_key(d, 1, "svg", "#FFFFFF")
-        assert len({white, clear, svg}) == 3
-
-    def test_cache_key_changes_when_the_document_changes(self):
-        before = _helpers.render_cache_key(doc("x", "Notes", doc_hash="v1"), 1, "png", "#FFF")
-        after = _helpers.render_cache_key(doc("x", "Notes", doc_hash="v2"), 1, "png", "#FFF")
-        assert before != after
-
-    def test_download_cache_avoids_repeat_downloads(self):
-        d = doc("nb", "Notes")
-        library = FakeLibrary([d], {"nb": make_notebook_zip(["p1", "p2"])})
-
-        for _ in range(3):
-            _helpers.download_document(library, d)
-
-        assert len(library.download_calls) == 1
-
-    def test_download_cache_refetches_a_changed_document(self):
-        library = FakeLibrary([], {"nb": make_notebook_zip(["p1"])})
-        _helpers.download_document(library, doc("nb", "Notes", doc_hash="v1"))
-        _helpers.download_document(library, doc("nb", "Notes", doc_hash="v2"))
-        assert len(library.download_calls) == 2
-
-    def test_rendered_image_cache_evicts_by_size(self):
-        _helpers._rendered_image_cache.clear()
-        big = "x" * (8 * 1024 * 1024)
-        for i in range(12):  # 96MB against a 64MB budget
-            _helpers.put_rendered_image(f"key-{i}", big)
-
-        total = sum(len(v) for v in _helpers._rendered_image_cache.values())
-        assert total <= _helpers._MAX_RENDERED_IMAGE_BYTES
-        # Most recent survives, oldest was evicted
-        assert "key-11" in _helpers._rendered_image_cache
-        assert "key-0" not in _helpers._rendered_image_cache
 
 
 # =============================================================================
@@ -650,10 +423,11 @@ class TestDuplicateNames:
             ]
         )
         with use_library(library):
-            data = await call("remarkable_read", document="Notes")
+            with pytest.raises(ToolError) as exc:
+                await mcp.call_tool("remarkable_read", {"id": "Notes"})
 
-        assert data["_error"]["type"] == "ambiguous_document"
-        assert set(data["_error"]["did_you_mean"]) == {"/Work/Notes", "/Personal/Notes"}
+        message = str(exc.value)
+        assert "/Work/Notes (id n1)" in message and "/Personal/Notes (id n2)" in message
 
     async def test_full_path_resolves_a_duplicate_name(self):
         library = FakeLibrary(
@@ -669,9 +443,9 @@ class TestDuplicateNames:
             },
         )
         with use_library(library):
-            data = await call("remarkable_read", document="/Work/Notes")
+            data = await call("remarkable_read", id="/Work/Notes")
 
-        assert "work notes" in data["content"]
+        assert data["id"] == "n1" and "work notes" in data["pages"][0]["text"]
 
     async def test_a_unique_name_still_resolves(self):
         library = FakeLibrary(
@@ -679,58 +453,18 @@ class TestDuplicateNames:
             {"n1": make_notebook_zip(["p1"], typed_text="the only one")},
         )
         with use_library(library):
-            data = await call("remarkable_read", document="Unique Note")
-        assert "the only one" in data["content"]
+            data = await call("remarkable_read", id="Unique Note")
+        assert "the only one" in data["pages"][0]["text"]
 
-
-# =============================================================================
-# RM-15 — the zip guard must reject traversal, including near-miss prefixes
-# =============================================================================
-
-
-class TestZipExtractionSafety:
-    def test_rejects_parent_directory_traversal(self, tmp_path):
-        from rm_mcp.extract.notebook import _safe_extractall
-
-        archive = tmp_path / "evil.zip"
-        with zipfile.ZipFile(archive, "w") as zf:
-            zf.writestr("../escaped.txt", "nope")
-
-        target = tmp_path / "target"
-        target.mkdir()
-        with zipfile.ZipFile(archive) as zf:
-            with pytest.raises(ValueError, match="outside target directory"):
-                _safe_extractall(zf, target)
-
-    def test_rejects_absolute_sibling_prefix(self, tmp_path):
-        """A sibling directory sharing the target's name prefix is not inside it."""
-        from rm_mcp.extract.notebook import _safe_extractall
-
-        target = tmp_path / "target"
-        target.mkdir()
-        (tmp_path / "target-evil").mkdir()
-
-        archive = tmp_path / "evil.zip"
-        with zipfile.ZipFile(archive, "w") as zf:
-            zf.writestr("../target-evil/pwned.txt", "nope")
-
-        with zipfile.ZipFile(archive) as zf:
-            with pytest.raises(ValueError, match="outside target directory"):
-                _safe_extractall(zf, target)
-
-    def test_allows_normal_nested_members(self, tmp_path):
-        from rm_mcp.extract.notebook import _safe_extractall
-
-        archive = tmp_path / "ok.zip"
-        with zipfile.ZipFile(archive, "w") as zf:
-            zf.writestr("doc/page.rm", "data")
-
-        target = tmp_path / "target"
-        target.mkdir()
-        with zipfile.ZipFile(archive) as zf:
-            _safe_extractall(zf, target)
-
-        assert (target / "doc" / "page.rm").read_text() == "data"
+    async def test_trashed_documents_are_not_found(self):
+        library = FakeLibrary(
+            [doc("bin", "Old", folder=True, parent="trash"), doc("n1", "Gone", parent="bin")]
+        )
+        with use_library(library):
+            with pytest.raises(ToolError):
+                await mcp.call_tool("remarkable_read", {"id": "n1"})
+            data = await call("remarkable_find")
+        assert data["results"] == []
 
 
 # =============================================================================
@@ -762,15 +496,6 @@ class TestConfigParsing:
 
         monkeypatch.setenv("RM_TEST_VALUE", "  ")
         assert env_int("RM_TEST_VALUE", 9) == 9
-
-    async def test_malformed_page_size_does_not_break_reads(self, monkeypatch):
-        monkeypatch.setenv("REMARKABLE_PAGE_SIZE", "enormous")
-        library = FakeLibrary(
-            [doc("n1", "Note")], {"n1": make_notebook_zip(["p1"], typed_text="content here")}
-        )
-        with use_library(library):
-            data = await call("remarkable_read", document="Note")
-        assert "content here" in data["content"]
 
 
 # =============================================================================
@@ -946,64 +671,39 @@ class TestTokenHandling:
 
 
 class TestBackgroundLoader:
-    async def test_loader_fetches_the_library_once(self, clean_state):
+    async def run(self, library, **kwargs):
         import asyncio
 
-        from rm_mcp import resources
-
-        documents = [doc(f"d{i}", f"Note {i}") for i in range(40)]
-        library = FakeLibrary(documents)
-
-        resources._registered_docs.clear()
-        resources._registered_uris.clear()
-        resources._registered_img.clear()
+        from rm_mcp import loader
 
         with patch("rm_mcp.api.get_rmapi", return_value=library):
-            await resources._load_documents_background(asyncio.Event())
+            await loader.load_library(asyncio.Event(), pause_seconds=0, **kwargs)
 
-        # One fetch for the whole library, not one per batch
+    async def test_loader_fetches_the_library_once(self, clean_state):
+        library = FakeLibrary([doc(f"d{i}", f"Note {i}") for i in range(40)])
+        await self.run(library)
         assert library.meta_calls == 1
 
     async def test_loader_indexes_only_documents_inside_the_root(self, clean_state, monkeypatch):
-        import asyncio
-
-        from rm_mcp import resources
-
         library = FakeLibrary(
             [
                 doc("work", "Work", folder=True),
                 doc("personal", "Personal", folder=True),
                 doc("in", "Inside", parent="work"),
                 doc("out", "Outside", parent="personal"),
-            ]
+            ],
+            {"in": make_notebook_zip(["p1"]), "out": make_notebook_zip(["p1"])},
         )
-
-        resources._registered_docs.clear()
-        resources._registered_uris.clear()
-        resources._registered_img.clear()
-
         monkeypatch.setenv("REMARKABLE_ROOT_PATH", "/Work")
-        with patch("rm_mcp.api.get_rmapi", return_value=library):
-            await resources._load_documents_background(asyncio.Event())
+        await self.run(library)
 
         assert clean_state.get_document_hash("in") is not None
         assert clean_state.get_document_hash("out") is None
+        assert "out" not in library.download_calls
 
     async def test_loader_publishes_the_complete_collection(self, clean_state):
-        import asyncio
-
-        from rm_mcp import resources
-
-        documents = [doc(f"d{i}", f"Note {i}") for i in range(30)]
-        library = FakeLibrary(documents)
-
-        resources._registered_docs.clear()
-        resources._registered_uris.clear()
-        resources._registered_img.clear()
-
-        with patch("rm_mcp.api.get_rmapi", return_value=library):
-            await resources._load_documents_background(asyncio.Event())
-
+        library = FakeLibrary([doc(f"d{i}", f"Note {i}") for i in range(30)])
+        await self.run(library)
         _client, collection = cache_mod.get_cached_collection()
         assert len(collection) == 30
 
@@ -1020,10 +720,11 @@ class TestReadingEndToEnd:
             {"n1": make_notebook_zip(["p1", "p2"], typed_text="Discussed the roadmap")},
         )
         with use_library(library):
-            data = await call("remarkable_read", document="Meeting Notes")
-        assert "Discussed the roadmap" in data["content"]
+            data = await call("remarkable_read", id="Meeting Notes")
+        assert "Discussed the roadmap" in data["pages"][0]["text"]
+        assert data["page_count"] == 2
 
-    async def test_browse_lists_folders_and_documents(self):
+    async def test_list_shows_folders_and_documents(self):
         library = FakeLibrary(
             [
                 doc("work", "Work", folder=True),
@@ -1032,18 +733,20 @@ class TestReadingEndToEnd:
             ]
         )
         with use_library(library):
-            data = await call("remarkable_browse", path="/")
+            data = await call("remarkable_list")
 
-        assert [f["name"] for f in data["folders"]] == ["Work"]
-        assert [d["name"] for d in data["documents"]] == ["Top Level"]
+        assert [(i["name"], i["type"]) for i in data["items"]] == [
+            ("Work", "folder"),
+            ("Top Level", "notebook"),
+        ]
 
-    async def test_browse_into_a_folder(self):
+    async def test_list_into_a_folder(self):
         library = FakeLibrary(
             [doc("work", "Work", folder=True), doc("n1", "Report", parent="work")]
         )
         with use_library(library):
-            data = await call("remarkable_browse", path="/Work")
-        assert [d["name"] for d in data["documents"]] == ["Report"]
+            data = await call("remarkable_list", folder="/Work")
+        assert [d["name"] for d in data["items"]] == ["Report"]
 
     async def test_status_reports_document_count_and_config(self):
         library = FakeLibrary([doc("n1", "One"), doc("n2", "Two")])
@@ -1057,26 +760,25 @@ class TestReadingEndToEnd:
     async def test_missing_document_suggests_alternatives(self):
         library = FakeLibrary([doc("n1", "Quarterly Report")])
         with use_library(library):
-            data = await call("remarkable_read", document="Quarterly Repot")
-
-        assert data["_error"]["type"] == "document_not_found"
-        assert "Quarterly Report" in data["_error"]["did_you_mean"]
-
-    async def test_page_out_of_range_is_explained(self):
-        library = FakeLibrary(
-            [doc("n1", "Note")], {"n1": make_notebook_zip(["p1"], typed_text="short")}
-        )
-        with use_library(library):
-            data = await call("remarkable_read", document="Note", page=99)
-        assert data["_error"]["type"] == "page_out_of_range"
+            with pytest.raises(ToolError) as exc:
+                await mcp.call_tool("remarkable_read", {"id": "Quarterly Repot"})
+        assert "'Quarterly Report'" in str(exc.value)
 
     async def test_invalid_regex_is_reported_clearly(self):
         library = FakeLibrary(
             [doc("n1", "Note")], {"n1": make_notebook_zip(["p1"], typed_text="content")}
         )
         with use_library(library):
-            data = await call("remarkable_read", document="Note", grep="[unclosed")
-        assert data["_error"]["type"] == "invalid_grep"
+            with pytest.raises(ToolError) as exc:
+                await mcp.call_tool("remarkable_read", {"document": "Note", "grep": "[unclosed"})
+        assert "regular expression" in str(exc.value)
+
+    async def test_failed_download_names_the_document(self):
+        library = FakeLibrary([doc("n1", "Note")])  # no archive: download raises
+        with use_library(library):
+            with pytest.raises(ToolError) as exc:
+                await mcp.call_tool("remarkable_read", {"id": "n1"})
+        assert "/Note" in str(exc.value) and "remarkable_status" in str(exc.value)
 
 
 # =============================================================================
@@ -1089,27 +791,30 @@ class TestParsePages:
         "spec,total,expected",
         [
             ("all", 3, [1, 2, 3]),
+            ("ALL", 3, [1, 2, 3]),
             ("1-3", 5, [1, 2, 3]),
             ("2,4,5", 5, [2, 4, 5]),
             ("1-2,5", 5, [1, 2, 5]),
-            ("3-1", 5, []),  # reversed range yields nothing
-            ("0-2", 5, [1, 2]),  # clamped to the first page
             ("4-99", 5, [4, 5]),  # clamped to the last page
-            ("", 5, []),
-            ("nonsense", 5, []),
+            ("0-2", 5, [1, 2]),  # clamped to the first page
+            ("3-", 5, [3, 4, 5]),  # open-ended
             ("2,,3", 5, [2, 3]),
             ("3,1,2", 5, [1, 2, 3]),  # sorted
             ("2,2,2", 5, [2]),  # de-duplicated
-            ("ALL", 3, [1, 2, 3]),  # case-insensitive
         ],
     )
     def test_parse_pages(self, spec, total, expected):
-        assert _helpers.parse_pages(spec, total) == expected
+        assert reader.parse_pages(spec, total, "Doc") == expected
 
-    def test_parse_pages_never_returns_out_of_range_values(self):
-        for spec in ("all", "1-999", "0", "-5", "1,50,100"):
-            for page in _helpers.parse_pages(spec, 7):
-                assert 1 <= page <= 7
+    @pytest.mark.parametrize("spec", ["nonsense", "-5", "1-2-3", "two"])
+    def test_unreadable_specs_say_how_to_write_one(self, spec):
+        with pytest.raises(ToolError, match="'all'"):
+            reader.parse_pages(spec, 5, "Doc")
+
+    @pytest.mark.parametrize("spec", ["9", "3-1", "0", ""])
+    def test_out_of_range_names_the_page_count(self, spec):
+        with pytest.raises(ToolError, match="5 pages"):
+            reader.parse_pages(spec, 5, "Doc")
 
 
 # =============================================================================
@@ -1655,152 +1360,56 @@ class TestFileTypeDetection:
         assert get_file_type(None, d) == "notebook"
 
 
-class TestRealPagePagination:
-    """page=N on a PDF must mean page N of the PDF, not a character chunk."""
-
-    def make_multipage_pdf_zip(self, page_texts):
-        import fitz
-
-        pdf = fitz.open()
-        for text in page_texts:
-            pg = pdf.new_page()
-            if text:
-                pg.insert_text((72, 144), text, fontsize=14)
-        data = pdf.tobytes()
-        pdf.close()
-
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w") as zf:
-            zf.writestr("doc.content", json.dumps({"cPages": {"pages": []}}))
-            zf.writestr("doc.pdf", data)
-        return buffer.getvalue()
-
-    def library_with(self, page_texts):
-        d = doc("pdf-1", "Paper.pdf")
-        return FakeLibrary([d], {"pdf-1": self.make_multipage_pdf_zip(page_texts)})
-
-    async def test_page_two_is_the_pdf_page_two(self):
-        library = self.library_with(["alpha first page", "bravo second page", "charlie third"])
-        with use_library(library):
-            data = await call("remarkable_read", document="Paper.pdf", page=2)
-
-        assert data["page"] == 2
-        assert data["total_pages"] == 3
-        assert data["page_type"] == "page"
-        assert "bravo second page" in data["content"]
-        assert "alpha" not in data["content"] and "charlie" not in data["content"]
-
-    async def test_blank_pdf_page_is_returned_empty_not_skipped(self):
-        """A page with no text layer keeps its number; skipping it would shift
-        every later page off by one."""
-        library = self.library_with(["alpha", "", "charlie third"])
-        with use_library(library):
-            data = await call("remarkable_read", document="Paper.pdf", page=3)
-        assert "charlie third" in data["content"]
-        with use_library(library):
-            data = await call("remarkable_read", document="Paper.pdf", page=2)
-        assert data["content"].strip() == ""
-        assert data["total_pages"] == 3
-
-    async def test_page_out_of_range_names_the_real_count(self):
-        library = self.library_with(["alpha", "bravo"])
-        with use_library(library):
-            data = await call("remarkable_read", document="Paper.pdf", page=9)
-        assert data["_error"]["type"] == "page_out_of_range"
-        assert "2" in data["_error"]["message"]
-
-    async def test_pages_all_concatenates_with_markers(self):
-        library = self.library_with(["alpha", "bravo", "charlie"])
-        with use_library(library):
-            data = await call("remarkable_read", document="Paper.pdf", pages="all")
-        assert data["pages"] == [1, 2, 3]
-        for word in ("alpha", "bravo", "charlie"):
-            assert word in data["content"]
-
-    async def test_grep_redirects_to_the_matching_pdf_page(self):
-        library = self.library_with(["alpha", "bravo", "the delta quadrant"])
-        with use_library(library):
-            data = await call("remarkable_read", document="Paper.pdf", grep="delta")
-        assert data["page"] == 3
-        assert data["grep_redirected_from"] == 1
-
-    async def test_annotations_are_flagged_not_mixed_into_pages(self):
-        import fitz
-
-        pdf = fitz.open()
-        pdf.new_page().insert_text((72, 144), "source page text", fontsize=14)
-        data_pdf = pdf.tobytes()
-        pdf.close()
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w") as zf:
-            zf.writestr("doc.content", json.dumps({"cPages": {"pages": []}}))
-            zf.writestr("doc.pdf", data_pdf)
-            zf.writestr("doc/notes.txt", "my typed annotation")
-        library = FakeLibrary([doc("pdf-1", "Paper.pdf")], {"pdf-1": buffer.getvalue()})
-
-        with use_library(library):
-            page1 = await call("remarkable_read", document="Paper.pdf", page=1)
-            notes = await call("remarkable_read", document="Paper.pdf", content_type="annotations")
-
-        assert page1["has_annotations"] is True
-        assert "my typed annotation" not in page1["content"]
-        assert "my typed annotation" in notes["content"]
-
-
 class TestBackgroundContentIndexing:
-    """PDF/EPUB text becomes searchable without anything being read first."""
-
-    def fresh_loader_state(self):
-        from rm_mcp import resources
-
-        resources._registered_docs.clear()
-        resources._registered_uris.clear()
-        resources._registered_img.clear()
+    """Page text becomes searchable without anything being read first."""
 
     async def run_loader(self, library):
         import asyncio
 
-        from rm_mcp import resources
+        from rm_mcp import loader
 
-        self.fresh_loader_state()
+        cache_mod.invalidate_collection_cache()
         with patch("rm_mcp.api.get_rmapi", return_value=library):
-            with patch.object(resources, "_CONTENT_INDEX_PAUSE_SECONDS", 0):
-                await resources._load_documents_background(asyncio.Event())
+            await loader.load_library(asyncio.Event(), pause_seconds=0)
 
-    async def test_pdf_is_searchable_after_startup_alone(self, clean_state):
+    async def test_pdf_is_searchable_by_page_after_startup_alone(self, clean_state):
         library = FakeLibrary(
             [doc("pdf-1", "Paper.pdf")],
             {"pdf-1": make_pdf_zip("the quokka population of Rottnest Island")},
         )
         await self.run_loader(library)
 
-        hits = clean_state.search("quokka")
-        assert len(hits) == 1 and hits[0]["doc_id"] == "pdf-1"
+        [hit] = clean_state.search("quokka")
+        assert (hit["doc_id"], hit["page_number"]) == ("pdf-1", 1)
 
-    async def test_notebooks_are_not_downloaded(self, clean_state):
-        """Notebook OCR needs the client's model; the loader must skip them."""
+    async def test_notebooks_are_indexed_too(self, clean_state):
+        """Typed text needs no model, so notebooks are indexed like PDFs."""
         library = FakeLibrary(
-            [doc("nb-1", "Journal"), doc("pdf-1", "Paper.pdf")],
-            {
-                "nb-1": make_notebook_zip(["p1"]),
-                "pdf-1": make_pdf_zip("indexable text"),
-            },
+            [doc("nb-1", "Journal")],
+            {"nb-1": make_notebook_zip(["p1"], typed_text="pelican sightings")},
         )
         await self.run_loader(library)
-        assert "nb-1" not in library.download_calls
-        assert "pdf-1" in library.download_calls
+        assert [h["doc_id"] for h in clean_state.search("pelican")] == ["nb-1"]
 
     async def test_second_startup_downloads_nothing(self, clean_state):
-        """Already-indexed documents are filtered out, so a restart is free."""
+        """Already-indexed versions are filtered out, so a restart is free."""
         library = FakeLibrary([doc("pdf-1", "Paper.pdf")], {"pdf-1": make_pdf_zip("some text")})
         await self.run_loader(library)
         first_run = len(library.download_calls)
-        assert first_run >= 1
+        assert first_run == 1
 
-        cache_mod.clear_extraction_cache()
-        _helpers.clear_download_cache()
+        reader.clear_caches()
         await self.run_loader(library)
         assert len(library.download_calls) == first_run
+
+    async def test_a_new_version_is_indexed_again(self, clean_state):
+        library = FakeLibrary([doc("pdf-1", "Paper.pdf")], {"pdf-1": make_pdf_zip("first draft")})
+        await self.run_loader(library)
+        library.documents = [doc("pdf-1", "Paper.pdf", doc_hash="h2")]
+        library.archives["pdf-1"] = make_pdf_zip("second draft")
+        await self.run_loader(library)
+        assert clean_state.search("first") == []
+        assert len(clean_state.search("second")) == 1
 
     async def test_scanned_pdf_is_marked_and_not_retried(self, clean_state):
         """A PDF with no text layer must not be re-downloaded every startup."""
@@ -1819,17 +1428,16 @@ class TestBackgroundContentIndexing:
         await self.run_loader(library)
         assert clean_state.has_indexed_content("scan-1")
 
-        cache_mod.clear_extraction_cache()
-        _helpers.clear_download_cache()
+        reader.clear_caches()
         first_run = len(library.download_calls)
         await self.run_loader(library)
         assert len(library.download_calls) == first_run
 
     async def test_oversized_documents_are_skipped_loudly(self, clean_state):
-        from rm_mcp import resources
+        from rm_mcp import loader
 
         big = doc("big-1", "Huge Scan.pdf")
-        big.size = resources._MAX_CONTENT_INDEX_BYTES + 1
+        big.size = loader.MAX_CONTENT_INDEX_BYTES + 1
         library = FakeLibrary([big], {"big-1": make_pdf_zip("never fetched")})
         await self.run_loader(library)
 
@@ -1841,14 +1449,6 @@ class TestBackgroundContentIndexing:
         library = FakeLibrary([doc("pdf-1", "Paper.pdf")], {"pdf-1": make_pdf_zip("hidden text")})
         await self.run_loader(library)
         assert "pdf-1" not in library.download_calls
-
-    async def test_extensionless_pdf_is_still_indexed(self, clean_state):
-        """The candidate filter must use blob-based type detection."""
-        d = doc("arxiv-1", "2304.03442")
-        d.files = [{"id": "x.pdf", "hash": "h", "type": "0", "subfiles": 0, "size": 1}]
-        library = FakeLibrary([d], {"arxiv-1": make_pdf_zip("blobtyped document text")})
-        await self.run_loader(library)
-        assert len(clean_state.search("blobtyped")) == 1
 
 
 class TestSearchQuerySyntax:

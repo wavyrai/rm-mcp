@@ -47,7 +47,6 @@ def _print_config_instructions(token: str) -> None:
     code_lines = [
         "claude mcp add remarkable \\",
         f"  -e REMARKABLE_TOKEN='{token}' \\",
-        "  -e REMARKABLE_OCR_BACKEND=sampling \\",
         "  -- uvx rm-mcp@latest",
     ]
     print(box("Claude Code", code_lines))
@@ -172,7 +171,6 @@ Examples:
             code_lines = [
                 "claude mcp add remarkable \\",
                 f"  -e REMARKABLE_TOKEN='{token}' \\",
-                "  -e REMARKABLE_OCR_BACKEND=sampling \\",
                 "  -- uvx rm-mcp@latest",
             ]
             print(box("Claude Code", code_lines))

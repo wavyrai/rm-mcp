@@ -32,12 +32,14 @@ _DEFAULT_BACKGROUND_COLOR = "#FBFBFB"
 
 
 def get_background_color() -> str:
-    """Get the background color, checking env var for override."""
-    return os.environ.get("REMARKABLE_BACKGROUND_COLOR", _DEFAULT_BACKGROUND_COLOR)
+    """The paper colour pages render on: REMARKABLE_BACKGROUND_COLOR, else #FBFBFB.
 
-
-# Evaluated at import; use get_background_color() to read the env var at runtime.
-REMARKABLE_BACKGROUND_COLOR = get_background_color()
+    Read on every call so a changed setting applies without a restart. The
+    default is opaque on purpose: a transparent PNG shows black ink on a black
+    background in a dark-mode client.
+    """
+    value = os.environ.get("REMARKABLE_BACKGROUND_COLOR", "").strip()
+    return value or _DEFAULT_BACKGROUND_COLOR
 
 
 def _parse_hex_color(hex_color: str) -> tuple:
@@ -333,11 +335,11 @@ def _compose_page(
     return doc, zoom
 
 
-def _to_png(doc, zoom: float, background_color: Optional[str]) -> bytes:
+def _to_png(doc, zoom: float, background_color: Optional[str], scale: float = 1.0) -> bytes:
     import fitz
 
     opaque = bool(background_color) and _parse_hex_color(background_color)[3] == 255
-    pix = doc[0].get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=not opaque)
+    pix = doc[0].get_pixmap(matrix=fitz.Matrix(zoom * scale, zoom * scale), alpha=not opaque)
     return pix.tobytes("png")
 
 
@@ -347,10 +349,12 @@ def _to_svg(doc, zoom: float) -> str:
     return doc[0].get_svg_image(matrix=fitz.Matrix(zoom, zoom), text_as_path=True)
 
 
-def _render(tree, source, source_page, background_color, fmt: str):
+def _render(tree, source, source_page, background_color, fmt: str, scale: float = 1.0):
     doc, zoom = _compose_page(tree, source, source_page, background_color)
     try:
-        return _to_png(doc, zoom, background_color) if fmt == "png" else _to_svg(doc, zoom)
+        if fmt == "png":
+            return _to_png(doc, zoom, background_color, scale)
+        return _to_svg(doc, zoom)
     finally:
         doc.close()
 
@@ -378,7 +382,9 @@ def render_rm_file_to_svg(
     return _render_rm_file(rm_file_path, background_color, "svg")
 
 
-def _render_document_page(zip_path: Path, page: int, background_color: Optional[str], fmt: str):
+def _render_document_page(
+    zip_path: Path, page: int, background_color: Optional[str], fmt: str, scale: float = 1.0
+):
     from rm_mcp.extract.pages import read_page_plan
 
     try:
@@ -405,7 +411,7 @@ def _render_document_page(zip_path: Path, page: int, background_color: Optional[
                 )
                 source.close()
                 source, source_page = None, None
-            return _render(tree, source, source_page, background_color, fmt)
+            return _render(tree, source, source_page, background_color, fmt, scale)
         finally:
             if source is not None:
                 source.close()
@@ -415,15 +421,21 @@ def _render_document_page(zip_path: Path, page: int, background_color: Optional[
 
 
 def render_page_from_document_zip(
-    zip_path: Path, page: int = 1, background_color: Optional[str] = None
+    zip_path: Path,
+    page: int = 1,
+    background_color: Optional[str] = None,
+    scale: float = 1.0,
 ) -> Optional[bytes]:
     """Render one page (1-indexed) of a document archive to PNG.
 
     Notebook pages fill the device frame; PDF and EPUB pages show the source
-    page with the ink on top. Returns None if the page does not exist or the
-    render fails.
+    page with the ink on top. ``scale`` shrinks (or grows) the whole page; the
+    background defaults to the configured paper colour (get_background_color).
+    Returns None if the page does not exist or the render fails.
     """
-    return _render_document_page(zip_path, page, background_color, "png")
+    if background_color is None:
+        background_color = get_background_color()
+    return _render_document_page(zip_path, page, background_color, "png", scale)
 
 
 def render_page_from_document_zip_svg(
