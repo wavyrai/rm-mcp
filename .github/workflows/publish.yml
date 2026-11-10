@@ -84,6 +84,33 @@ jobs:
           name: dist
           path: dist/
 
+  desktop-bundle:
+    # Packs mcpb/ (Claude Desktop bundle) and attaches it to the release.
+    needs: [create-release, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check the bundle version matches the tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          got=$(python3 -c "import json; print(json.load(open('mcpb/manifest.json'))['version'])")
+          [ "$got" = "$VERSION" ] || { echo "mcpb/manifest.json is $got, tag is $VERSION"; exit 1; }
+
+      - name: Validate and pack
+        run: sh mcpb/build.sh
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" mcpb/rm-mcp-*.mcpb --clobber
+
   publish-pypi:
     needs: build
     runs-on: ubuntu-latest

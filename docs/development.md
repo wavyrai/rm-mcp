@@ -168,7 +168,7 @@ Releases are automated via GitHub Actions. The version is derived from the git t
 1. Ensure all changes are merged to `main`
 2. Ensure README.md and docs are current
 3. Ensure CI is passing on `main`
-4. Update version in `pyproject.toml` and `server.json`
+4. Update the version in `pyproject.toml`, `server.json`, `plugin/.claude-plugin/plugin.json` and `mcpb/manifest.json` (CI checks they agree), and add a CHANGELOG.md section
 5. Commit, tag, and push:
 
 ```bash
@@ -211,7 +211,7 @@ Until the secret exists, the probe step passes with a warning. To debug a failur
 | `requests` | HTTP client for reMarkable Cloud API |
 | `rmscene` | Native .rm file parser (text extraction, rendering) |
 | `pymupdf` | PDF text extraction; draws pages to PNG/SVG |
-| `Pillow` | Image processing |
+| `Pillow` | Tests only: compares rendered pages with goldens |
 
 ## Environment Variables
 

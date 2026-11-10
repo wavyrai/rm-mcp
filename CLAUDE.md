@@ -82,7 +82,7 @@ uv build                        # Build wheel + sdist into dist/
 
 ## Version management
 
-The version lives in `pyproject.toml` (single source of truth). The publish workflow extracts it from the git tag (`v0.4.7` → `0.4.7`) and patches both `pyproject.toml` and `server.json` before building. When bumping manually, update `pyproject.toml` and `server.json`.
+The version lives in `pyproject.toml` (single source of truth). The publish workflow extracts it from the git tag (`v0.4.7` → `0.4.7`) and patches both `pyproject.toml` and `server.json` before building. When bumping, update `pyproject.toml`, `server.json`, `plugin/.claude-plugin/plugin.json` and `mcpb/manifest.json` together (the CI `plugin` job checks they agree) and add a CHANGELOG.md section. The publish workflow also packs `mcpb/` and attaches the `.mcpb` to the GitHub release.
 
 ## Release process
 
