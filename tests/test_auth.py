@@ -347,3 +347,36 @@ def test_doctor_with_a_token_offline(monkeypatch, tmp_path, capsys):
     assert cli._handle_doctor(online=False) == 0
     out = capsys.readouterr().out
     assert "token file" in out and jwt(2e9) not in out
+
+
+# =============================================================================
+# One-time code (Claude Desktop bundle)
+# =============================================================================
+
+
+def test_one_time_code_is_redeemed_once_when_no_token_exists(monkeypatch):
+    monkeypatch.setenv("REMARKABLE_ONE_TIME_CODE", "abcdefgh")
+    response = Mock(status_code=200, text="device-from-code")
+    with patch("requests.post", return_value=response) as post:
+        client = api_mod.get_rmapi()
+        assert client.device_token == "device-from-code"
+        monkeypatch.setattr(api_mod, "_client_singleton", None)
+        monkeypatch.setattr(api_mod, "_client_source", None)
+        assert api_mod.get_rmapi().device_token == "device-from-code"
+    assert post.call_count == 1
+    assert auth.find_token().kind == "file"
+
+
+def test_one_time_code_is_ignored_when_a_token_exists(monkeypatch):
+    write_file_token()
+    monkeypatch.setenv("REMARKABLE_ONE_TIME_CODE", "abcdefgh")
+    with patch("requests.post") as post:
+        api_mod.get_rmapi()
+    post.assert_not_called()
+
+
+def test_a_used_code_says_how_to_get_a_new_one(monkeypatch):
+    monkeypatch.setenv("REMARKABLE_ONE_TIME_CODE", "abcdefgh")
+    with patch("requests.post", return_value=Mock(status_code=400, text="")):
+        with pytest.raises(RuntimeError, match="Codes work once"):
+            api_mod.get_rmapi()

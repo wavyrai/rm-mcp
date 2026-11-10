@@ -15,6 +15,7 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    monkeypatch.delenv("REMARKABLE_ONE_TIME_CODE", raising=False)
     monkeypatch.setattr(api_mod, "_client_singleton", None)
     monkeypatch.setattr(api_mod, "_client_source", None)
     monkeypatch.setattr(api_mod, "_client_signature", None)

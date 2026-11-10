@@ -27,6 +27,8 @@ from typing import Any, Dict, Mapping, Optional
 
 TOKEN_FILE = "token.json"
 ENV_VAR = "REMARKABLE_TOKEN"
+# A one-time code the server redeems itself when no token exists (Claude Desktop bundle).
+CODE_ENV_VAR = "REMARKABLE_ONE_TIME_CODE"
 # A user token closer than this to its expiry is renewed instead of used.
 USER_TOKEN_MARGIN_SECONDS = 300
 

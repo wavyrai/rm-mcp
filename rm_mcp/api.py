@@ -3,6 +3,7 @@ reMarkable Cloud API client helpers.
 """
 
 import logging
+import os
 import threading
 from typing import Optional
 
@@ -36,7 +37,7 @@ def get_rmapi() -> Optional[RemarkableClientProtocol]:
 
         from rm_mcp.clients.cloud import load_client_from_token
 
-        source = auth.find_token()
+        source = auth.find_token() or _redeem_one_time_code()
         if source is None:
             _client_singleton = _client_source = _client_signature = None
             return None
@@ -49,6 +50,25 @@ def get_rmapi() -> Optional[RemarkableClientProtocol]:
         _client_singleton, _client_source = client, source
         _client_signature = auth.file_signature(source.path) if source.path else None
         return client
+
+
+def _redeem_one_time_code() -> Optional[auth.TokenSource]:
+    """With no token anywhere, register with REMARKABLE_ONE_TIME_CODE (the Desktop bundle).
+
+    The token goes to our file, so the next start finds it and the code, which
+    works only once, is never sent again.
+    """
+    code = os.environ.get(auth.CODE_ENV_VAR, "").strip()
+    if not code:
+        return None
+    try:
+        register_and_get_token(code)
+    except Exception as e:
+        raise RuntimeError(
+            f"{auth.CODE_ENV_VAR} was set but registration failed: {e} "
+            "Codes work once; get a new one at https://my.remarkable.com/device/apps/connect"
+        )
+    return auth.find_token()
 
 
 def current_source() -> Optional[auth.TokenSource]:

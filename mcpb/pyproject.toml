@@ -1,0 +1,8 @@
+[project]
+name = "rm-mcp-desktop-bundle"
+version = "2.0.0"
+description = "Claude Desktop bundle for rm-mcp: runs the rm-mcp server from PyPI"
+requires-python = ">=3.10"
+dependencies = [
+    "rm-mcp>=2.0.0,<3",
+]
