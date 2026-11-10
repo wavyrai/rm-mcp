@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/wavyrai/rm-mcp/main/plugin/.claude-plugin/icon.png" alt="rm-mcp icon: a pen writing a line on an e-paper tablet" width="128" height="128"></p>
+
 # rm-mcp: your reMarkable in Claude
 
 rm-mcp is an MCP server that lets Claude (and other MCP clients) find, read and look at everything on your reMarkable tablet: notebooks, PDFs, EPUBs, highlights and handwriting. It can also send documents to the tablet and tidy your folders. It never deletes anything.
