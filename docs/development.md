@@ -58,7 +58,6 @@ rm-mcp/
 │   └── clients/
 │       └── cloud.py       # reMarkable Cloud API v3/v4 client
 ├── tests/                 # Test suite + fixtures/
-├── scripts/canary.py      # Daily read-only probe of the real cloud
 ├── plugin/                # Claude Code plugin (MCP server + skills)
 ├── .claude-plugin/        # marketplace.json for /plugin marketplace add
 ├── mcpb/                  # Claude Desktop bundle (manifest, build.sh)
@@ -182,21 +181,6 @@ The workflow automatically:
 - Builds the package with the tag version
 - Publishes to PyPI (trusted publishing via OIDC)
 - Publishes to MCP Registry (GitHub OIDC authentication)
-
-## Daily canary
-
-`.github/workflows/canary.yml` runs `scripts/canary.py` every day (and on demand from the Actions tab) against the real reMarkable Cloud. It calls `remarkable_status`, `remarkable_find`, reads one page, views one page, and checks that the root index hashes to the root hash, parses and re-serialises byte for byte (the property every write depends on), for the root and a sample of document indexes. A second job lists `ddvk/rmapi` issues from the past week that mention 400s, headers, sync, uploads or tokens.
-
-The probe is read-only twice over: it sets `REMARKABLE_READ_ONLY=1`, and it wraps `requests`' transport so any request other than GET/HEAD or the token-renewal POST raises before it leaves the process; a refused request fails the run. Its output has counts and HTTP status codes only, never document names, ids or text, because Actions logs on a public repository are public.
-
-**Secret:** add a repository secret `REMARKABLE_TOKEN` (Settings → Secrets and variables → Actions). Use a token from a separate registration, so it can be revoked on its own at my.remarkable.com:
-
-```bash
-HOME=$(mktemp -d) uvx rm-mcp@latest setup --no-clients
-# then copy the token file the command names (token.json) into the secret's value
-```
-
-Until the secret exists, the probe step passes with a warning. To debug a failure privately, run it locally with `CANARY_VERBOSE=1 REMARKABLE_TOKEN=... uv run python scripts/canary.py`.
 
 ## Distribution
 

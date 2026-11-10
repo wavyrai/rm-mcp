@@ -115,8 +115,6 @@ mcp-publisher publish
 - **test:** pytest on Ubuntu, macOS and Windows, Python 3.10 to 3.13
 - **plugin:** JSON manifests parse; plugin, mcpb and server.json versions equal pyproject.toml's
 
-`canary.yml` runs a daily read-only probe of the real cloud (see docs/development.md).
-
 `conformance.yml` runs MCP protocol conformance tests.
 
 ## setup.sh installer
