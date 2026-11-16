@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Libraries with schema 3 indexes load in full again (#21). A schema 3 index is addressed by the SHA-256 of its entry hashes (sorted by id), not of its bytes; 2.0.0 rejected every such blob, which lost the whole library when the root was schema 3 and silently dropped each document whose own index was. Downloads of schema 3 documents check entry sizes, which their hash does not cover.
+- Methods templates (`TemplateType`) read as one page of kind `template`: their labels as text, their preview as the page image. They used to fail with "has no pages".
+- `REMARKABLE_INCLUDE_TRASH=1` lists trashed items under `/Trash` for reading; writes still never touch them. Trashed items no longer take the path of a library item of the same name.
 - Removed the daily canary workflow (`canary.yml`, `scripts/canary.py`).
 
 ## 2.0.0
