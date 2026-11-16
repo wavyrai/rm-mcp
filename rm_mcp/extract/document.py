@@ -13,6 +13,7 @@ one. For each page this reads what can be known without a model looking at it:
   transcript of the page is stored under.
 """
 
+import hashlib
 import json
 import logging
 import zipfile
@@ -21,6 +22,7 @@ from pathlib import PurePosixPath
 from typing import Dict, List, Optional, Tuple
 
 from rm_mcp.extract.pages import PagePlan, page_content_hashes, read_page_plan
+from rm_mcp.extract.template import template_member, template_text
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,20 @@ def read_document_pages(zip_path) -> DocumentPages:
     """Read every tablet page of a document archive."""
     with zipfile.ZipFile(zip_path, "r") as zf:
         plan = read_page_plan(zf)
+        template = template_member(zf)
+        if template is not None and not plan.pages:
+            data = zf.read(template)
+            page = Page(
+                number=1,
+                hash=hashlib.sha256(data).hexdigest(),
+                source_page=None,
+                inserted=False,
+                typed_text=template_text(data),
+                source_text="",
+                highlights=(),
+                has_ink=False,
+            )
+            return DocumentPages(kind="template", pages=(page,))
         hashes = page_content_hashes(zf, plan)
         sources = _source_texts(zf, plan)
         old_highlights = _json_highlights(zf)

@@ -114,6 +114,7 @@ Set these as environment variables in the client config. Most people need none o
 | `REMARKABLE_ROOT_PATH` | `/` | Show only this folder, such as `/Work` |
 | `REMARKABLE_READ_ONLY` | off | `1` refuses every write (send, organize, undo) |
 | `REMARKABLE_WRITE_ROOT` | `REMARKABLE_ROOT_PATH` | Folder (full path) every write must stay inside |
+| `REMARKABLE_INCLUDE_TRASH` | off | `1` lists trashed items under `/Trash` (read only) |
 | `REMARKABLE_BACKGROUND_COLOR` | `#FBFBFB` | Page image background, `#RRGGBB` or `#RRGGBBAA` |
 | `REMARKABLE_MAX_OUTPUT_CHARS` | `50000` | Page text per `remarkable_read` call |
 | `REMARKABLE_CACHE_TTL` | `60` | Seconds before the library is checked for changes |

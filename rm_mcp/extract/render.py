@@ -386,10 +386,16 @@ def _render_document_page(
     zip_path: Path, page: int, background_color: Optional[str], fmt: str, scale: float = 1.0
 ):
     from rm_mcp.extract.pages import read_page_plan
+    from rm_mcp.extract.template import render_template_icon, template_member
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             plan = read_page_plan(zf)
+            template = template_member(zf)
+            if template is not None and not plan.pages:
+                if page != 1:
+                    return None
+                return render_template_icon(zf.read(template), fmt, scale)
             if page < 1 or page > len(plan.pages):
                 return None
             ref = plan.pages[page - 1]

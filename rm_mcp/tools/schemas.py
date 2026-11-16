@@ -9,7 +9,7 @@ class Doc(BaseModel):
     id: str = Field(description="Stable document id (UUID); pass it to the other tools.")
     name: str
     path: str = Field(description="Path from the library root (or REMARKABLE_ROOT_PATH).")
-    type: str = Field(description="notebook, pdf, epub or folder.")
+    type: str = Field(description="notebook, pdf, epub, template or folder.")
     modified: Optional[str] = Field(None, description="Last modified on the tablet, ISO 8601.")
     page_count: Optional[int] = Field(None, description="Tablet pages, once the document is read.")
 
