@@ -35,7 +35,7 @@ def find_result(**kwargs) -> FindResult:
 async def remarkable_find(
     query: Optional[str] = None,
     folder: Optional[str] = None,
-    type: Optional[Literal["notebook", "pdf", "epub"]] = None,
+    type: Optional[Literal["notebook", "pdf", "epub", "template"]] = None,
     modified_after: Optional[str] = None,
     limit: int = 20,
 ) -> FindResult:

@@ -82,8 +82,17 @@ def get_items_by_id(collection) -> Dict[str, Any]:
     return {item.ID: item for item in collection}
 
 
+TRASH_ID = "trash"
+TRASH_FOLDER = "Trash"
+
+
 def get_item_path(item, items_by_id: Dict[str, Any]) -> str:
-    """Get the full path of an item."""
+    """Get the full path of an item.
+
+    Trashed items live under `/Trash/`, so they never take the path of a
+    document of the same name in the library (they are hidden unless
+    REMARKABLE_INCLUDE_TRASH is set).
+    """
     path_parts = [item.VissibleName]
     parent_id = item.Parent if hasattr(item, "Parent") else ""
     visited = set()
@@ -94,4 +103,6 @@ def get_item_path(item, items_by_id: Dict[str, Any]) -> str:
         parent = items_by_id[parent_id]
         path_parts.insert(0, parent.VissibleName)
         parent_id = parent.Parent if hasattr(parent, "Parent") else ""
+    if parent_id == TRASH_ID:
+        path_parts.insert(0, TRASH_FOLDER)
     return "/" + "/".join(path_parts)

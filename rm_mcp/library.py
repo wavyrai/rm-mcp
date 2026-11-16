@@ -43,6 +43,23 @@ def _known_page_count(doc_id: str) -> Optional[int]:
         return None
 
 
+def _kind(item) -> str:
+    if item.is_folder:
+        return "folder"
+    if getattr(item, "Type", None) == "TemplateType":
+        return "template"
+    return get_file_type(None, item)
+
+
+def _entry_page_count(item) -> Optional[int]:
+    kind = _kind(item)
+    if kind == "folder":
+        return None
+    if kind == "template":
+        return 1  # shown as one page: its labels and its preview
+    return _page_count(item)
+
+
 def _page_count(item) -> Optional[int]:
     synced = getattr(item, "page_count", None)
     return synced if isinstance(synced, int) else _known_page_count(item.ID)
@@ -60,10 +77,10 @@ class Library:
                 id=item.ID,
                 path=get_item_path(item, by_id),
                 name=item.VissibleName,
-                kind="folder" if item.is_folder else get_file_type(None, item),
+                kind=_kind(item),
                 hash=getattr(item, "hash", "") or "",
                 modified=item.ModifiedClient,
-                page_count=None if item.is_folder else _page_count(item),
+                page_count=_entry_page_count(item),
                 stale=bool(getattr(item, "stale", False)),
                 parent=getattr(item, "Parent", "") or "",
             )

@@ -39,6 +39,38 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def schema3_index_hash(data: bytes) -> Optional[str]:
+    """Hash of a schema 3 index blob, or None if `data` is not one.
+
+    Schema 4 indexes (and every file blob) are addressed by the SHA-256 of
+    their bytes. Schema 3 indexes are not: their hash is the SHA-256 of the
+    entry hashes, hex-decoded, ordered by entry id and concatenated (rmapi's
+    `HashEntries`). Accounts that synced before schema 4 still hold such
+    indexes, for the root and for every document not edited since, mixed with
+    schema 4 ones in the same library.
+    """
+    if not data.startswith(b"3\n"):
+        return None
+    entries = []
+    for line in data.split(b"\n")[1:]:
+        parts = line.split(b":")
+        if len(parts) < 5:
+            continue
+        try:
+            entries.append((parts[2], bytes.fromhex(parts[0].decode("ascii"))))
+        except (ValueError, UnicodeDecodeError):
+            return None
+    digest = hashlib.sha256()
+    for _entry_id, entry_hash in sorted(entries):
+        digest.update(entry_hash)
+    return digest.hexdigest()
+
+
+def blob_matches(data: bytes, digest: str) -> bool:
+    """True if `data` is the blob `digest` names, under either addressing rule."""
+    return sha256_hex(data) == digest or schema3_index_hash(data) == digest
+
+
 class BlobStore:
     """Thread-safe, size-capped, content-addressed blob cache on disk."""
 
@@ -85,7 +117,7 @@ class BlobStore:
             except OSError:
                 self._entries.pop(digest, None)
                 return None
-            if sha256_hex(data) != digest:
+            if not blob_matches(data, digest):
                 logger.warning("Blob %s failed its hash check on disk; discarding it", digest)
                 self._entries.pop(digest, None)
                 path.unlink(missing_ok=True)
@@ -99,7 +131,7 @@ class BlobStore:
 
     def put(self, digest: str, data: bytes) -> None:
         """Store a blob. Raises BlobHashMismatch if `data` is not `digest`'s bytes."""
-        if sha256_hex(data) != digest:
+        if not blob_matches(data, digest):
             raise BlobHashMismatch(f"Bytes do not match blob hash {digest}")
         if len(data) > self.max_bytes:
             return

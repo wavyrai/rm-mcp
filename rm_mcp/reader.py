@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from mcp.server.mcpserver.exceptions import ToolError
 
 from rm_mcp import cache as _cache
-from rm_mcp.config import env_int
+from rm_mcp.config import env_bool, env_int
 from rm_mcp.extract.document import DocumentPages, Page, read_document_pages
 from rm_mcp.extract.render import get_background_color, render_page_from_document_zip
 from rm_mcp.library import Library, LibraryEntry, library_for
@@ -30,7 +30,7 @@ from rm_mcp.paths import _apply_root_filter, _get_root_path, _is_within_root, _r
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_KINDS = ("notebook", "pdf", "epub")
+DOCUMENT_KINDS = ("notebook", "pdf", "epub", "template")
 MAX_VIEW_PAGES = 4
 # Images count against the client's result budget (Claude Code: 25k tokens).
 VIEW_BUDGET_BYTES = 1_000_000
@@ -39,6 +39,11 @@ VIEW_SCALES = {"normal": 0.6, "large": 1.0}
 
 def max_output_chars() -> int:
     return env_int("REMARKABLE_MAX_OUTPUT_CHARS", 50000, minimum=1000)
+
+
+def include_trash() -> bool:
+    """REMARKABLE_INCLUDE_TRASH=1 shows trashed items (read-only) under /Trash."""
+    return env_bool("REMARKABLE_INCLUDE_TRASH", False)
 
 
 def _index():
@@ -71,7 +76,7 @@ class Snapshot:
     def visible(self, entry: Optional[LibraryEntry]) -> bool:
         return (
             entry is not None
-            and not self.in_trash(entry)
+            and (include_trash() or not self.in_trash(entry))
             and _is_within_root(entry.path, self.root)
             and not (entry.is_folder and entry.path.lower() == self.root.lower())
         )

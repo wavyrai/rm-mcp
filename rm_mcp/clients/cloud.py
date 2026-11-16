@@ -21,7 +21,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from rm_mcp import auth
-from rm_mcp.blobstore import get_default_store
+from rm_mcp.blobstore import blob_matches, get_default_store
 from rm_mcp.config import env_int
 from rm_mcp.models import Document, Folder  # noqa: F401
 
@@ -439,9 +439,10 @@ class RemarkableClient:
         response = self._request(f"{FILES_URL}/{file_hash}", headers={RM_FILENAME_HEADER: filename})
         response.raise_for_status()
         data = response.content
-        # Blobs are addressed by the SHA-256 of their bytes. Anything else is a
-        # truncated or corrupted transfer and must not be used or cached.
-        if blob_hash(data) != file_hash:
+        # Blobs are addressed by the SHA-256 of their bytes (schema 3 indexes by
+        # the SHA-256 of their entry hashes). Anything else is a truncated or
+        # corrupted transfer and must not be used or cached.
+        if not blob_matches(data, file_hash):
             raise RuntimeError(
                 f"Blob {filename} (hash={file_hash}) failed its hash check; not using it."
             )
@@ -721,6 +722,7 @@ class RemarkableClient:
         blob_content = self._get_file(doc.hash, _index_filename(doc.id))
         blob_entries = self._parse_index(blob_content)
 
+        schema3 = blob_content.startswith(b"3\n")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for entry in blob_entries:
@@ -731,6 +733,14 @@ class RemarkableClient:
                         f"Failed to download {entry['id']} (hash={entry['hash']}) "
                         f"for document {doc.id}: {e}"
                     ) from e
+                # A schema 3 index hash covers only the entry hashes, not the
+                # sizes, so there the sizes are checked against the bytes they
+                # describe (schema 4 hashes the whole index, sizes included).
+                if schema3 and len(file_content) != int(entry["size"]):
+                    raise RuntimeError(
+                        f"{entry['id']} of document {doc.id} is {len(file_content)} bytes, "
+                        f"its index says {entry['size']}; not using it."
+                    )
                 zf.writestr(entry["id"], file_content)
 
         zip_buffer.seek(0)
